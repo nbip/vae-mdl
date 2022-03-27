@@ -13,12 +13,14 @@ def iwae_loss(z, qzx, x, pxz):
 
     lpxz = tf.reduce_sum(pxz.log_prob(x), axis=[-1, -2])
 
-    log_w = lpxz + (lpz - lqzx)
+    log_w = lpxz + 20 * (lpz - lqzx)
 
-    # vae_elbo = tf.reduce_mean(tf.reduce_mean(log_w, axis=0), axis=-1)
     iwae_elbo = tf.reduce_mean(logmeanexp(log_w, axis=0), axis=-1)
 
-    return -iwae_elbo, {"lpxz": lpxz}
+    snis = tf.math.log_softmax(log_w)
+    kl = snis * (lpz - lqzx)
+
+    return -iwae_elbo, {"loss": -iwae_elbo, "lpxz": lpxz + snis, "lqzx": lqzx, "lpz": lpz, "kl": kl}
 
 
 def elbo_loss(z, qzx, x, pxz):
@@ -34,4 +36,4 @@ def elbo_loss(z, qzx, x, pxz):
 
     elbo = tf.reduce_mean(tf.reduce_mean(log_w, axis=0), axis=-1)
 
-    return -elbo, {"lpxz": lpxz}
+    return -elbo, {"loss": -elbo, "lpxz": lpxz}

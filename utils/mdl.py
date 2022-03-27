@@ -59,6 +59,9 @@ class MixtureDiscretizedLogistic(tfd.Distribution):
         Assume parameter shape:    [batch, h, w, ch, n_mix * 10]
         """
 
+        # ---- specific to this project: x from [0., 1.] to [-1., 1.]
+        x = x * 2.0 - 1.0
+
         # ---- [batch, h, w, ch, n_mix]
         loc, logscale, mix_logits = self._get_autoregressive_params(x)
 
@@ -238,6 +241,9 @@ class MixtureDiscretizedLogistic(tfd.Distribution):
             autoregressive_samples * categorical_samples, axis=-1
         )
 
+        # ---- specific to this project: samples from [-1., 1.] to [0., 1.]
+        selected_samples = (selected_samples + 1.0) / 2.0
+
         return selected_samples
 
     def _mean(self, n=100, **kwargs):
@@ -288,3 +294,6 @@ if __name__ == "__main__":
 
     lp = p.log_prob(2.0 * x - 1.0)
     print(lp.shape)
+
+    print(p.sample(2).shape)
+    print(p.mean().shape)

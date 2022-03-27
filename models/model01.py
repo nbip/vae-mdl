@@ -6,17 +6,24 @@ https://github.com/rasmusbergpalm/vnca/blob/dmg_celebA_baseline/modules/vae.py#L
 TODO: bits_pr_dim or other scaling of loss
 https://github.com/rasmusbergpalm/vnca/blob/main/modules/loss.py
 https://github.com/rasmusbergpalm/vnca/blob/main/modules/vnca.py#L185
+
+# TODO: make the most minimal change to dml: instead of x use loc, so
+# loc_g = loc_g + coeff * clip(loc_r, -1, 1)
+# I think that is the first incremental change I can make
 """
 
 import os
 from datetime import datetime
 
+import matplotlib; matplotlib.use('Agg')  # needed when running from commandline
+import matplotlib.pyplot as plt
 import tensorflow as tf
 from tensorflow_probability import distributions as tfd
 
 from models.loss import iwae_loss
 from models.model import Model
-from utils import MixtureDiscretizedLogistic, logmeanexp
+from utils import (MixtureDiscretizedLogistic, PixelMixtureDiscretizedLogistic,
+                   logmeanexp)
 
 
 def Conv2D(*args, **kwargs):
@@ -67,6 +74,7 @@ class Model01(Model, tf.keras.Model):
         self.optimizer = tf.keras.optimizers.Adam(1e-3)
         self.n_samples = 10
         self.global_step = 0
+        self.init_tensorboard()
 
         self.loss_fn = iwae_loss
 
@@ -98,6 +106,7 @@ class Model01(Model, tf.keras.Model):
             ]
         )
 
+    # TODO: debug, why can't I use tf.function here?
     def call(self, x, n_samples=1, **kwargs):
         qzx = self.encode(x)
         z = qzx.sample(n_samples)
@@ -108,6 +117,14 @@ class Model01(Model, tf.keras.Model):
         q = self.encoder(x)
         loc, logscale = tf.split(q, num_or_size_splits=2, axis=-1)
         return tfd.Normal(loc, tf.exp(logscale) + 1e-6)
+
+    # def decode(self, z):
+    #     logits = self.decoder(z)
+    #     return PixelMixtureDiscretizedLogistic(logits)
+
+    # def decode(self, z):
+    #     logits = self.decoder(z)
+    #     return tfd.Bernoulli(logits[..., :3], dtype=tf.float32)
 
     def decode(self, z):
         logits = self.decoder(z)
@@ -120,7 +137,7 @@ class Model01(Model, tf.keras.Model):
             loss, metrics = self.loss_fn(z, qzx, x, pxz)
 
         grads = tape.gradient(loss, self.trainable_weights)
-        # grads = [tf.clip_by_norm(g, clip_norm=1.0) for g in grads]
+        grads = [tf.clip_by_norm(g, clip_norm=1.0) for g in grads]
 
         self.optimizer.apply_gradients(zip(grads, self.trainable_weights))
 
@@ -135,16 +152,34 @@ class Model01(Model, tf.keras.Model):
     def train_batch(self):
         x, y = next(self.train_loader)
         loss, metrics = self.train_step(x)
+        self.global_step += 1
 
         return loss, metrics
 
     def val_batch(self):
         x, y = next(self.val_loader)
         loss, metrics = self.val_step(x)
+        self.report(x, metrics)
         return loss, metrics
 
-    def report(self, writer, metrics):
-        pass
+    def report(self, x, metrics):
+        samples, recs = self._plot_samples(x)
+
+        with self.val_summary_writer.as_default():
+            tf.summary.image("Evaluation/img_rec", recs[0, :], step=self.global_step)
+            tf.summary.image("Evaluation/img_samp", samples[0, :], step=self.global_step)
+            for key, value in metrics.items():
+                tf.summary.scalar(f"Evalutation/{key}", value.numpy().mean(), step=self.global_step)
+
+    def _plot_samples(self, x):
+        z, qzx, pxz = self(x[0][None, :], n_samples=self.n_samples)
+        recs = pxz.mean(n=100)  # [n_samples, batch, h, w, ch]
+
+        pz = tfd.Normal(tf.zeros_like(z), tf.ones_like(z))
+        pxz = self.decode(pz.sample())
+        samples = pxz.sample()  # [n_samples, batch, h, w, ch]
+
+        return samples, recs
 
     def setup_data(self, data_dir=None):
         def normalize(img, label):
@@ -173,16 +208,16 @@ class Model01(Model, tf.keras.Model):
                 normalize, num_parallel_calls=4).shuffle(50000).repeat().batch(batch_size).prefetch(4)
         )
         ds_test = (
-            ds_test.map(normalize, num_parallel_calls=4).batch(batch_size).prefetch(4)
+            ds_test.map(normalize, num_parallel_calls=4).repeat().batch(batch_size).prefetch(4)
         )
 
         return iter(ds_train), iter(ds_test)
 
     def save(self, fp):
-        pass
+        self.save_weights(fp)
 
     def load(self, fp):
-        pass
+        self.load_weights(fp)
 
     def init_tensorboard(self, name: str = None) -> None:
         experiment = name or "tensorboard"
@@ -190,9 +225,9 @@ class Model01(Model, tf.keras.Model):
             "%Y%m%d-%H%M%S"
         )
         train_log_dir = f"/tmp/{experiment}/{revision}/train"
-        test_log_dir = f"/tmp/{experiment}/{revision}/test"
+        val_log_dir = f"/tmp/{experiment}/{revision}/val"
         self.train_summary_writer = tf.summary.create_file_writer(train_log_dir)
-        self.test_summary_writer = tf.summary.create_file_writer(test_log_dir)
+        self.val_summary_writer = tf.summary.create_file_writer(val_log_dir)
 
         # ---- directory for saving trained models
         self.save_dir = f"./saved_models/{experiment}/{revision}"
@@ -201,10 +236,8 @@ class Model01(Model, tf.keras.Model):
 
 if __name__ == "__main__":
 
-    import os
+    os.environ["CUDA_VISIBLE_DEVICES"] = ""
     import numpy as np
-
-    os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 
     b, h, w, c = 5, 32, 32, 3
     x = np.random.rand(b, h, w, c).astype(np.float32)
@@ -216,16 +249,7 @@ if __name__ == "__main__":
 
     model = Model01()
 
-    # x, y = next(model.train_loader)
-    # for i in range(500):
-    #     print(i)
-    #     x, y = next(model.train_loader)
-    #     print(x.shape)
-    #     if x.shape[0] != 128:
-    #         break
-
-    import matplotlib; matplotlib.use('Agg')  # needed when running from commandline
-    import matplotlib.pyplot as plt
+    x, y = next(model.train_loader)
 
     fig, ax = plt.subplots()
     ax.imshow(x[0])
@@ -238,6 +262,13 @@ if __name__ == "__main__":
     z = qzx.sample(model.n_samples)
     pxz = model.decode(z)
     z, qzx, pxz = model(x, model.n_samples)
+
+    # ---- test save / load
+    # model.save() does not work because methods are returning tfd distribution objects
+    # instead use save_weights
+    # model.save_weights('saved_weights')
+    # model.load_weights('saved_weights')
+    model.load_weights('best')
 
     # ---- test model reconstructions
     x = x[0][None, :]
@@ -252,6 +283,9 @@ if __name__ == "__main__":
     ax.imshow(mean[0, 0, :])
     plt.show()
     plt.close()
+
+    # ---- test reporting
+    model.report(x, {"loss": tf.ones(2)})
 
     model.train_step(x)
 
