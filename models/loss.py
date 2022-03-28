@@ -11,9 +11,10 @@ def iwae_loss(z, qzx, x, pxz):
 
     lqzx = tf.reduce_sum(qzx.log_prob(z), axis=[-1, -2, -3])
 
-    lpxz = tf.reduce_sum(pxz.log_prob(x), axis=[-1, -2])
+    # lpxz = tf.reduce_sum(pxz.log_prob(x), axis=[-1, -2])
+    lpxz = tf.reduce_sum(pxz.log_prob(x), axis=[-1, -2, -3])
 
-    log_w = lpxz + 20 * (lpz - lqzx)
+    log_w = lpxz + (lpz - lqzx)
 
     iwae_elbo = tf.reduce_mean(logmeanexp(log_w, axis=0), axis=-1)
 

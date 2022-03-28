@@ -26,6 +26,17 @@ from utils import (MixtureDiscretizedLogistic, PixelMixtureDiscretizedLogistic,
                    logmeanexp)
 
 
+class BernoulliWrapper(tfd.Bernoulli):
+    def __init__(self, *args, **kwargs):
+        super(BernoulliWrapper, self).__init__(*args, **kwargs)
+
+    def mean(self, n=100, **kwargs):
+        return super(BernoulliWrapper, self).mean(**kwargs)
+
+    def sample(self, **kwargs):
+        return tf.nn.sigmoid(self.logits)
+
+
 def Conv2D(*args, **kwargs):
     return conv2DWrap(*args, transpose=False, **kwargs)
 
@@ -122,13 +133,14 @@ class Model01(Model, tf.keras.Model):
     #     logits = self.decoder(z)
     #     return PixelMixtureDiscretizedLogistic(logits)
 
-    # def decode(self, z):
-    #     logits = self.decoder(z)
-    #     return tfd.Bernoulli(logits[..., :3], dtype=tf.float32)
-
     def decode(self, z):
         logits = self.decoder(z)
-        return MixtureDiscretizedLogistic(logits)
+        return BernoulliWrapper(logits=logits[..., :3], dtype=tf.float32)
+        # return tfd.Bernoulli(logits=logits[..., :3], dtype=tf.float32)
+
+    # def decode(self, z):
+    #     logits = self.decoder(z)
+    #     return MixtureDiscretizedLogistic(logits)
 
     @tf.function
     def train_step(self, x):
@@ -173,7 +185,8 @@ class Model01(Model, tf.keras.Model):
 
     def _plot_samples(self, x):
         z, qzx, pxz = self(x[0][None, :], n_samples=self.n_samples)
-        recs = pxz.mean(n=100)  # [n_samples, batch, h, w, ch]
+        recs = pxz.mean()  # [n_samples, batch, h, w, ch]
+        # recs = pxz.mean(n=100)  # [n_samples, batch, h, w, ch]
 
         pz = tfd.Normal(tf.zeros_like(z), tf.ones_like(z))
         pxz = self.decode(pz.sample())

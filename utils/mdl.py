@@ -247,7 +247,7 @@ class MixtureDiscretizedLogistic(tfd.Distribution):
         return selected_samples
 
     def _mean(self, n=100, **kwargs):
-        return tf.reduce_mean(self.sample(100), axis=0)
+        return tf.reduce_mean(self.sample(n), axis=0)
 
 
 if __name__ == "__main__":
