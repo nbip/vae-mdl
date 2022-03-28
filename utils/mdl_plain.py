@@ -75,8 +75,10 @@ class PixelMixtureDiscretizedLogistic(DiscretizedLogistic):
 
         # ---- sample the mixture component
         cat_dist = tfd.Categorical(logits=self.mix_logits)  # [batch, h, w]
-        cat_samples = cat_dist.sample(n_samples)            # [n_samples, batch, h, w]
-        cat_samples_onehot = tf.one_hot(cat_samples, axis=-1, depth=self.n_mix)  # [n_samples, batch, h, w, n_mix]
+        cat_samples = cat_dist.sample(n_samples)  # [n_samples, batch, h, w]
+        cat_samples_onehot = tf.one_hot(
+            cat_samples, axis=-1, depth=self.n_mix
+        )  # [n_samples, batch, h, w, n_mix]
         # TODO: maybe reparameterizable?
 
         # ---- sample the logistic distributions
@@ -88,7 +90,9 @@ class PixelMixtureDiscretizedLogistic(DiscretizedLogistic):
         # ---- pin out the samples chosen by the categorical distribution
         # we do that by multiplying the samples with a onehot encoding of the
         # mixture samples then summing along the last axis
-        selected_samples = tf.reduce_sum(logistic_samples * cat_samples_onehot[..., None, :], axis=-1)
+        selected_samples = tf.reduce_sum(
+            logistic_samples * cat_samples_onehot[..., None, :], axis=-1
+        )
 
         # ---- specific to this project: samples from [-1., 1.] to [0., 1.]
         selected_samples = (selected_samples + 1.0) / 2.0
@@ -100,12 +104,16 @@ class PixelMixtureDiscretizedLogistic(DiscretizedLogistic):
         # TODO: average over softmax instead
         cat_dist = tfd.Categorical(logits=self.mix_logits)  # [batch, h, w]
         cat_samples = cat_dist.sample()  # [batch, h, w]
-        cat_samples_onehot = tf.one_hot(cat_samples, axis=-1, depth=self.n_mix)  # [batch, h, w, n_mix]
+        cat_samples_onehot = tf.one_hot(
+            cat_samples, axis=-1, depth=self.n_mix
+        )  # [batch, h, w, n_mix]
 
         # ---- pin out the locs chosen by the categorical distribution
         # we do that by multiplying the locs with a onehot encoding of the
         # mixture samples then summing along the last axis
-        selected_locs = tf.reduce_sum(self.loc * cat_samples_onehot[..., None, :], axis=-1)
+        selected_locs = tf.reduce_sum(
+            self.loc * cat_samples_onehot[..., None, :], axis=-1
+        )
         selected_locs = tf.clip_by_value(selected_locs, -1.0, 1.0)
 
         # ---- specific to this project: go from [-1., 1.] to [0., 1.]
@@ -160,7 +168,7 @@ def get_mixture_params(parameters):
     return loc, logscale, mix_logits
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
 
     import os
 

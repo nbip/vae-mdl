@@ -15,7 +15,7 @@ https://github.com/rasmusbergpalm/vnca/blob/main/modules/vnca.py#L185
 import os
 from datetime import datetime
 
-import matplotlib; matplotlib.use('Agg')  # needed when running from commandline
+import matplotlib; matplotlib.use("Agg")  # needed when running from commandline
 import matplotlib.pyplot as plt
 import tensorflow as tf
 from tensorflow_probability import distributions as tfd
@@ -101,12 +101,18 @@ class Model01(Model, tf.keras.Model):
                 Conv2D(
                     64, kernel_size=5, strides=2, padding="same", activation=tf.nn.elu
                 ),
-                Conv2D(128, kernel_size=5, strides=2, padding="same", activation=None),
+                Conv2D(
+                    128, kernel_size=5, strides=2, padding="same", activation=tf.nn.elu
+                ),
+                Conv2D(256, kernel_size=5, strides=2, padding="same", activation=None),
             ]
         )
 
         self.decoder = tf.keras.Sequential(
             [
+                Conv2DTranspose(
+                    128, kernel_size=5, strides=2, padding="same", activation=tf.nn.elu
+                ),
                 Conv2DTranspose(
                     64, kernel_size=5, strides=2, padding="same", activation=tf.nn.elu
                 ),
@@ -182,9 +188,13 @@ class Model01(Model, tf.keras.Model):
 
         with self.val_summary_writer.as_default():
             tf.summary.image("Evaluation/img_rec", recs[0, :], step=self.global_step)
-            tf.summary.image("Evaluation/img_samp", samples[0, :], step=self.global_step)
+            tf.summary.image(
+                "Evaluation/img_samp", samples[0, :], step=self.global_step
+            )
             for key, value in metrics.items():
-                tf.summary.scalar(f"Evalutation/{key}", value.numpy().mean(), step=self.global_step)
+                tf.summary.scalar(
+                    f"Evalutation/{key}", value.numpy().mean(), step=self.global_step
+                )
 
     def _plot_samples(self, x):
         z, qzx, pxz = self(x[0][None, :], n_samples=self.n_samples)
@@ -222,11 +232,17 @@ class Model01(Model, tf.keras.Model):
         # https://stackoverflow.com/a/50453698
         # https://stackoverflow.com/a/49916221
         ds_train = (
-            ds_train.map(
-                normalize, num_parallel_calls=4).shuffle(50000).repeat().batch(batch_size).prefetch(4)
+            ds_train.map(normalize, num_parallel_calls=4)
+            .shuffle(50000)
+            .repeat()
+            .batch(batch_size)
+            .prefetch(4)
         )
         ds_test = (
-            ds_test.map(normalize, num_parallel_calls=4).repeat().batch(batch_size).prefetch(4)
+            ds_test.map(normalize, num_parallel_calls=4)
+            .repeat()
+            .batch(batch_size)
+            .prefetch(4)
         )
 
         return iter(ds_train), iter(ds_test)
@@ -272,7 +288,7 @@ if __name__ == "__main__":
     fig, ax = plt.subplots()
     ax.imshow(x[0])
     plt.show()
-    plt.savefig('img')
+    plt.savefig("img")
     plt.close()
 
     # ---- test model subparts
@@ -286,7 +302,7 @@ if __name__ == "__main__":
     # instead use save_weights
     # model.save_weights('saved_weights')
     # model.load_weights('saved_weights')
-    model.load_weights('best')
+    model.load_weights("best")
 
     # ---- test model reconstructions
     x = x[0][None, :]
@@ -327,7 +343,7 @@ if __name__ == "__main__":
     fig, ax = plt.subplots()
     ax.imshow(mean[0, 0, :])
     plt.show()
-    plt.savefig('img_rec')
+    plt.savefig("img_rec")
     plt.close()
 
     # conv = conv2DWrap(32, kernel_size=5, strides=2, padding="same", activation=tf.nn.elu)

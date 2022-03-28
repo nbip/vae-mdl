@@ -21,7 +21,13 @@ def iwae_loss(z, qzx, x, pxz):
     snis = tf.math.log_softmax(log_w)
     kl = snis * (lpz - lqzx)
 
-    return -iwae_elbo, {"loss": -iwae_elbo, "lpxz": lpxz + snis, "lqzx": lqzx, "lpz": lpz, "kl": kl}
+    return -iwae_elbo, {
+        "loss": -iwae_elbo,
+        "lpxz": lpxz + snis,
+        "lqzx": lqzx,
+        "lpz": lpz,
+        "kl": kl,
+    }
 
 
 def elbo_loss(z, qzx, x, pxz):
