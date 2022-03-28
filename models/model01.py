@@ -91,6 +91,8 @@ class Model01(Model, tf.keras.Model):
 
         self.train_loader, self.val_loader = self.setup_data()
 
+        # TODO: encoder/decoder: https://github.com/rasmusbergpalm/vnca/blob/dmg_celebA_baseline/baseline_celebA.py#L25
+        # TODO: https://github.com/nbip/VAE-natural-images/blob/main/models/hvae.py
         self.encoder = tf.keras.Sequential(
             [
                 Conv2D(
@@ -118,6 +120,7 @@ class Model01(Model, tf.keras.Model):
         )
 
     # TODO: debug, why can't I use tf.function here?
+    # Looks like it has to return tensors
     def call(self, x, n_samples=1, **kwargs):
         qzx = self.encode(x)
         z = qzx.sample(n_samples)
@@ -133,14 +136,14 @@ class Model01(Model, tf.keras.Model):
     #     logits = self.decoder(z)
     #     return PixelMixtureDiscretizedLogistic(logits)
 
-    def decode(self, z):
-        logits = self.decoder(z)
-        return BernoulliWrapper(logits=logits[..., :3], dtype=tf.float32)
-        # return tfd.Bernoulli(logits=logits[..., :3], dtype=tf.float32)
-
     # def decode(self, z):
     #     logits = self.decoder(z)
-    #     return MixtureDiscretizedLogistic(logits)
+    #     return BernoulliWrapper(logits=logits[..., :3], dtype=tf.float32)
+    #     # return tfd.Bernoulli(logits=logits[..., :3], dtype=tf.float32)
+
+    def decode(self, z):
+        logits = self.decoder(z)
+        return MixtureDiscretizedLogistic(logits)
 
     @tf.function
     def train_step(self, x):
@@ -157,7 +160,7 @@ class Model01(Model, tf.keras.Model):
 
     @tf.function
     def val_step(self, x):
-        z, qzx, pxz = self(x)
+        z, qzx, pxz = self(x, n_samples=self.n_samples)
         loss, metrics = self.loss_fn(z, qzx, x, pxz)
         return loss, metrics
 
@@ -193,6 +196,8 @@ class Model01(Model, tf.keras.Model):
         samples = pxz.sample()  # [n_samples, batch, h, w, ch]
 
         return samples, recs
+
+    # TODO: test: https://github.com/rasmusbergpalm/vnca/blob/dmg_celebA_baseline/modules/vae.py#L124
 
     def setup_data(self, data_dir=None):
         def normalize(img, label):
