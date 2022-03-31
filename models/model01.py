@@ -3,27 +3,51 @@ https://github.com/rasmusbergpalm/vnca/blob/dmg-double-celeba/vae-nca.py
 https://github.com/rasmusbergpalm/vnca/tree/dmg_celebA_baseline
 https://github.com/rasmusbergpalm/vnca/blob/dmg_celebA_baseline/modules/vae.py#L88
 
-TODO: bits_pr_dim or other scaling of loss
-https://github.com/rasmusbergpalm/vnca/blob/main/modules/loss.py
-https://github.com/rasmusbergpalm/vnca/blob/main/modules/vnca.py#L185
+TODO: run VAE ELBO and beta-VAE elbo https://github.com/rasmusbergpalm/vnca/blob/dmg-double-celeba/vae-nca.py#L282
+TODO: use the torch celeba loader, adapt to tensorflow
+TODO: change module load in .bashrc to match the tf3 environment
 
 # TODO: make the most minimal change to dml: instead of x use loc, so
 # loc_g = loc_g + coeff * clip(loc_r, -1, 1)
 # I think that is the first incremental change I can make
+
+Things that mitigated nans:
+- softplus instead of exp
+- kernel initializer, look to https://arxiv.org/pdf/2203.13751.pdf appendix C.1
 """
 
 import os
 from datetime import datetime
 
-import matplotlib; matplotlib.use("Agg")  # needed when running from commandline
-import matplotlib.pyplot as plt
 import tensorflow as tf
+import tensorflow_datasets as tfds
+from tensorflow.keras import layers
 from tensorflow_probability import distributions as tfd
 
 from models.loss import iwae_loss
 from models.model import Model
 from utils import (MixtureDiscretizedLogistic, PixelMixtureDiscretizedLogistic,
                    logmeanexp)
+
+
+class SampleMerge(layers.Layer):
+    def __init__(self, *args: layers.Layer):
+        super().__init__()
+        self.seq = tf.keras.Sequential([*args])
+
+    def call(self, x, **kwargs):
+        in_shape = x.shape  # [samples, batch, h, w, c] or [batch, h, w, c]
+
+        # --- merge sample and batch dim
+        x = tf.reshape(x, [-1, *in_shape[-3:]])
+
+        out = self.seq(x)
+
+        # ---- unmerge sample and batch dim
+        out_shape = out.shape
+        out = tf.reshape(out, [*in_shape[:-3], *out_shape[-3:]])
+
+        return out
 
 
 class BernoulliWrapper(tfd.Bernoulli):
@@ -82,17 +106,18 @@ class Model01(Model, tf.keras.Model):
     def __init__(self):
         super(Model01, self).__init__()
 
-        self.optimizer = tf.keras.optimizers.Adam(1e-3)
+        self.optimizer = tf.keras.optimizers.Adamax(1e-3)
         self.n_samples = 10
         self.global_step = 0
         self.init_tensorboard()
 
         self.loss_fn = iwae_loss
 
-        self.train_loader, self.val_loader = self.setup_data()
+        self.train_loader, self.val_loader, self.ds_test = self.setup_data()
 
         # TODO: encoder/decoder: https://github.com/rasmusbergpalm/vnca/blob/dmg_celebA_baseline/baseline_celebA.py#L25
         # TODO: https://github.com/nbip/VAE-natural-images/blob/main/models/hvae.py
+        # https://github.com/AntixK/PyTorch-VAE/blob/master/models/iwae.py
         self.encoder = tf.keras.Sequential(
             [
                 Conv2D(
@@ -104,7 +129,10 @@ class Model01(Model, tf.keras.Model):
                 Conv2D(
                     128, kernel_size=5, strides=2, padding="same", activation=tf.nn.elu
                 ),
-                Conv2D(256, kernel_size=5, strides=2, padding="same", activation=None),
+                Conv2D(
+                    2 * 256, kernel_size=5, strides=2, padding="same", activation=None,
+                    kernel_initializer=tf.keras.initializers.RandomNormal(mean=0.0, stddev=0.01, seed=None)
+                ),
             ]
         )
 
@@ -120,7 +148,12 @@ class Model01(Model, tf.keras.Model):
                     32, kernel_size=5, strides=2, padding="same", activation=tf.nn.elu
                 ),
                 Conv2DTranspose(
-                    100, kernel_size=5, strides=2, padding="same", activation=None
+                    100,
+                    kernel_size=5,
+                    strides=2,
+                    padding="same",
+                    activation=None,
+                    kernel_initializer="zeros",
                 ),
             ]
         )
@@ -136,7 +169,7 @@ class Model01(Model, tf.keras.Model):
     def encode(self, x):
         q = self.encoder(x)
         loc, logscale = tf.split(q, num_or_size_splits=2, axis=-1)
-        return tfd.Normal(loc, tf.exp(logscale) + 1e-6)
+        return tfd.Normal(loc, tf.nn.softplus(logscale) + 1e-6)
 
     # def decode(self, z):
     #     logits = self.decoder(z)
@@ -157,10 +190,21 @@ class Model01(Model, tf.keras.Model):
             z, qzx, pxz = self(x, n_samples=self.n_samples)
             loss, metrics = self.loss_fn(z, qzx, x, pxz)
 
+        # assert ~tf.math.is_nan(loss), "nans in loss"
         grads = tape.gradient(loss, self.trainable_weights)
-        grads = [tf.clip_by_norm(g, clip_norm=1.0) for g in grads]
+        # grads = [tf.clip_by_norm(g, clip_norm=10.0) for g in grads]
+
+        # for g in grads:
+        #     assert (
+        #         tf.reduce_sum(tf.cast(tf.math.is_nan(g), tf.float32)) == 0
+        #     ), "nans in grads"
 
         self.optimizer.apply_gradients(zip(grads, self.trainable_weights))
+
+        # for w in self.trainable_weights:
+        #     assert (
+        #         tf.reduce_sum(tf.cast(tf.math.is_nan(w), tf.float32)) == 0
+        #     ), "nans in updated weights"
 
         return loss, metrics
 
@@ -183,10 +227,15 @@ class Model01(Model, tf.keras.Model):
         self.report(x, metrics)
         return loss, metrics
 
+    def test(self):
+        # TODO: test: https://github.com/rasmusbergpalm/vnca/blob/dmg_celebA_baseline/modules/vae.py#L124
+        pass
+
     def report(self, x, metrics):
         samples, recs = self._plot_samples(x)
 
         with self.val_summary_writer.as_default():
+            tf.summary.image("Evaluation/img", x[0][None, :], step=self.global_step)
             tf.summary.image("Evaluation/img_rec", recs[0, :], step=self.global_step)
             tf.summary.image(
                 "Evaluation/img_samp", samples[0, :], step=self.global_step
@@ -207,8 +256,6 @@ class Model01(Model, tf.keras.Model):
 
         return samples, recs
 
-    # TODO: test: https://github.com/rasmusbergpalm/vnca/blob/dmg_celebA_baseline/modules/vae.py#L124
-
     def setup_data(self, data_dir=None):
         def normalize(img, label):
             return tf.cast((img), tf.float32) / 255.0, label
@@ -217,35 +264,41 @@ class Model01(Model, tf.keras.Model):
         data_dir = "/tmp/nsbi/data" if data_dir is None else data_dir
         os.makedirs(data_dir, exist_ok=True)
 
-        import tensorflow_datasets as tfds
-
-        (ds_train, ds_test), ds_info = tfds.load(
-            "cifar10",
-            split=["train", "test"],
+        (ds_train, ds_val, ds_test), ds_info = tfds.load(
+            # "cifar10",
+            "svhn_cropped",
+            split=["train", "test[0%:50%]", "test[50%:100%]"],
             shuffle_files=True,
             data_dir=data_dir,
             with_info=True,
             as_supervised=True,
         )
 
-        # TODO: shuffle, infinite yield, preprocessing
+        # ---- shuffling, infinite yield, preprocessing
         # https://stackoverflow.com/a/50453698
         # https://stackoverflow.com/a/49916221
+        # https://www.tensorflow.org/guide/data#randomly_shuffling_input_data
+        # https://www.tensorflow.org/datasets/overview
+        # https://www.tensorflow.org/datasets/splits
+        # manual dataset https://www.tensorflow.org/datasets/add_dataset
+        # https://www.reddit.com/r/MachineLearning/comments/65me2d/d_proper_crop_for_celeba/
         ds_train = (
             ds_train.map(normalize, num_parallel_calls=4)
-            .shuffle(50000)
+            .shuffle(len(ds_train))
             .repeat()
             .batch(batch_size)
             .prefetch(4)
         )
-        ds_test = (
-            ds_test.map(normalize, num_parallel_calls=4)
+        ds_val = (
+            ds_val.map(normalize, num_parallel_calls=4)
             .repeat()
             .batch(batch_size)
             .prefetch(4)
         )
 
-        return iter(ds_train), iter(ds_test)
+        ds_test = ds_test.map(normalize).prefetch(4)
+
+        return iter(ds_train), iter(ds_val), ds_test
 
     def save(self, fp):
         self.save_weights(fp)
@@ -271,6 +324,9 @@ class Model01(Model, tf.keras.Model):
 if __name__ == "__main__":
 
     os.environ["CUDA_VISIBLE_DEVICES"] = ""
+    # import matplotlib;
+    # matplotlib.use("Agg")  # needed when running from commandline
+    import matplotlib.pyplot as plt
     import numpy as np
 
     b, h, w, c = 5, 32, 32, 3
@@ -302,7 +358,7 @@ if __name__ == "__main__":
     # instead use save_weights
     # model.save_weights('saved_weights')
     # model.load_weights('saved_weights')
-    model.load_weights("best")
+    # model.load_weights("best")
 
     # ---- test model reconstructions
     x = x[0][None, :]
@@ -326,10 +382,10 @@ if __name__ == "__main__":
     model.train_batch()
     model.val_batch()
 
-    for i in range(100_000):
-        loss, metrics = model.train_batch()
-        if i % 100 == 0:
-            print(i, loss)
+    # for i in range(100_000):
+    #     loss, metrics = model.train_batch()
+    #     if i % 100 == 0:
+    #         print(i, loss)
 
     # ---- test model reconstructions
     x = x[0][None, :]
