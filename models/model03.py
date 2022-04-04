@@ -1,4 +1,6 @@
 """
+Same as model01.py, but with a different architecture
+
 https://github.com/rasmusbergpalm/vnca/blob/dmg-double-celeba/vae-nca.py
 https://github.com/rasmusbergpalm/vnca/tree/dmg_celebA_baseline
 https://github.com/rasmusbergpalm/vnca/blob/dmg_celebA_baseline/modules/vae.py#L88
@@ -28,39 +30,7 @@ from tensorflow_probability import distributions as tfd
 
 from models.loss import iwae_loss
 from models.model import Model
-from utils import (MixtureDiscretizedLogistic, PixelMixtureDiscretizedLogistic,
-                   logmeanexp)
-
-
-class SampleMerge(layers.Layer):
-    def __init__(self, *args: layers.Layer):
-        super().__init__()
-        self.seq = tf.keras.Sequential([*args])
-
-    def call(self, x, **kwargs):
-        in_shape = x.shape  # [samples, batch, h, w, c] or [batch, h, w, c]
-
-        # --- merge sample and batch dim
-        x = tf.reshape(x, [-1, *in_shape[-3:]])
-
-        out = self.seq(x)
-
-        # ---- unmerge sample and batch dim
-        out_shape = out.shape
-        out = tf.reshape(out, [*in_shape[:-3], *out_shape[-3:]])
-
-        return out
-
-
-class BernoulliWrapper(tfd.Bernoulli):
-    def __init__(self, *args, **kwargs):
-        super(BernoulliWrapper, self).__init__(*args, **kwargs)
-
-    def mean(self, n=100, **kwargs):
-        return super(BernoulliWrapper, self).mean(**kwargs)
-
-    def sample(self, **kwargs):
-        return tf.nn.sigmoid(self.logits)
+from utils import MixtureDiscretizedLogistic
 
 
 def Conv2D(*args, **kwargs):
@@ -104,41 +74,46 @@ class conv2DWrap(tf.keras.layers.Layer):
         return out
 
 
-class Model01(Model, tf.keras.Model):
-    def __init__(self):
-        super(Model01, self).__init__()
+class GatedBlock(layers.Layer):
+    """https://arxiv.org/pdf/1612.08083.pdf"""
+    def __init__(self,
+                 filters=64,
+                 activation=tf.nn.relu,
+                 **kwargs):
+        super().__init__(**kwargs)
 
-        self.optimizer = tf.keras.optimizers.Adamax(1e-3)
-        self.n_samples = 10
-        self.global_step = 0
-        self.init_tensorboard()
+        self.l1 = layers.Conv2D(filters, kernel_size=3, strides=1, padding="same", activation=activation)
+        self.l2 = layers.Conv2D(2 * filters, kernel_size=3, strides=1, padding="same", activation=activation)
 
-        self.loss_fn = iwae_loss
+    def call(self, inputs, **kwargs):
+        block_input = self.l1(inputs)
+        A, B = tf.split(self.l2(block_input), 2, axis=-1)
+        H = A * tf.nn.sigmoid(B)
+        return H + block_input
 
-        self.train_loader, self.val_loader, self.ds_test = self.setup_data()
 
-        # TODO: encoder/decoder: https://github.com/rasmusbergpalm/vnca/blob/dmg_celebA_baseline/baseline_celebA.py#L25
-        # TODO: https://github.com/nbip/VAE-natural-images/blob/main/models/hvae.py
-        # https://github.com/AntixK/PyTorch-VAE/blob/master/models/iwae.py
-        self.encoder = tf.keras.Sequential(
+encoder = tf.keras.Sequential(
             [
-                Conv2D(
+                layers.Conv2D(
                     32, kernel_size=5, strides=2, padding="same", activation=tf.nn.elu
                 ),
-                Conv2D(
+                layers.Conv2D(
                     64, kernel_size=5, strides=2, padding="same", activation=tf.nn.elu
                 ),
-                Conv2D(
+                GatedBlock(64),
+                GatedBlock(64),
+                GatedBlock(64),
+                layers.Conv2D(
                     128, kernel_size=5, strides=2, padding="same", activation=tf.nn.elu
                 ),
-                Conv2D(
+                layers.Conv2D(
                     2 * 256, kernel_size=5, strides=2, padding="same", activation=None,
                     kernel_initializer=tf.keras.initializers.RandomNormal(mean=0.0, stddev=0.01, seed=None)
                 ),
             ]
         )
 
-        self.decoder = tf.keras.Sequential(
+decoder = tf.keras.Sequential(
             [
                 Conv2DTranspose(
                     128, kernel_size=5, strides=2, padding="same", activation=tf.nn.elu
@@ -146,6 +121,9 @@ class Model01(Model, tf.keras.Model):
                 Conv2DTranspose(
                     64, kernel_size=5, strides=2, padding="same", activation=tf.nn.elu
                 ),
+                GatedBlock(64),
+                GatedBlock(64),
+                GatedBlock(64),
                 Conv2DTranspose(
                     32, kernel_size=5, strides=2, padding="same", activation=tf.nn.elu
                 ),
@@ -160,6 +138,26 @@ class Model01(Model, tf.keras.Model):
             ]
         )
 
+class Model03(Model, tf.keras.Model):
+    def __init__(self):
+        super(Model03, self).__init__()
+
+        self.optimizer = tf.keras.optimizers.Adamax(1e-3)
+        self.n_samples = 10
+        self.global_step = 0
+        self.init_tensorboard()
+
+        self.loss_fn = iwae_loss
+
+        self.train_loader, self.val_loader, self.ds_test = self.setup_data()
+
+        # TODO: encoder/decoder: https://github.com/rasmusbergpalm/vnca/blob/dmg_celebA_baseline/baseline_celebA.py#L25
+        # TODO: https://github.com/nbip/VAE-natural-images/blob/main/models/hvae.py
+        # https://github.com/AntixK/PyTorch-VAE/blob/master/models/iwae.py
+        self.encoder = encoder
+
+        self.decoder = decoder
+
     # TODO: debug, why can't I use tf.function here?
     # Looks like it has to return tensors
     def call(self, x, n_samples=1, **kwargs):
@@ -172,15 +170,6 @@ class Model01(Model, tf.keras.Model):
         q = self.encoder(x)
         loc, logscale = tf.split(q, num_or_size_splits=2, axis=-1)
         return tfd.Normal(loc, tf.nn.softplus(logscale) + 1e-6)
-
-    # def decode(self, z):
-    #     logits = self.decoder(z)
-    #     return PixelMixtureDiscretizedLogistic(logits)
-
-    # def decode(self, z):
-    #     logits = self.decoder(z)
-    #     return BernoulliWrapper(logits=logits[..., :3], dtype=tf.float32)
-    #     # return tfd.Bernoulli(logits=logits[..., :3], dtype=tf.float32)
 
     def decode(self, z):
         logits = self.decoder(z)
@@ -305,10 +294,10 @@ class Model01(Model, tf.keras.Model):
         return iter(ds_train), iter(ds_val), ds_test
 
     def save(self, fp):
-        self.save_weights(fp)
+        self.save_weights(f"{fp}_03")
 
     def load(self, fp):
-        self.load_weights(fp)
+        self.load_weights(f"{fp}_03")
 
     def init_tensorboard(self, name: str = None) -> None:
         experiment = name or "tensorboard"
@@ -341,7 +330,7 @@ if __name__ == "__main__":
     if bin:
         x = np.floor(x * 256.0) / 255.0
 
-    model = Model01()
+    model = Model03(encoder, decoder)
 
     x, y = next(model.train_loader)
 
@@ -363,7 +352,6 @@ if __name__ == "__main__":
     # model.save_weights('saved_weights')
     # model.load_weights('saved_weights')
     # model.load_weights("best")
-    model.load_weights("latest")
 
     # ---- test model reconstructions
     x = x[0][None, :]
@@ -376,17 +364,6 @@ if __name__ == "__main__":
 
     fig, ax = plt.subplots()
     ax.imshow(mean[0, 0, :])
-    plt.show()
-    plt.close()
-    fig, ax = plt.subplots()
-    ax.imshow(x_samples[0, 0, 0, :])
-    plt.show()
-    plt.close()
-
-    # ---- generate from the prior
-    samples, recs = model._plot_samples(x)
-    fig, ax = plt.subplots()
-    ax.imshow(samples[2, 0, :])
     plt.show()
     plt.close()
 
@@ -444,3 +421,4 @@ if __name__ == "__main__":
     #     if i % (10 // 2) == 0:
     #         print("------------")
     #     print("{:02d}:".format(i), next(iterator))
+

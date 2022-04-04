@@ -83,3 +83,6 @@ class DiscretizedLogistic:
         samples = tf.clip_by_value(samples, self.low, self.high)
 
         return samples
+
+    def mean(self, **kwargs):
+        return self.loc

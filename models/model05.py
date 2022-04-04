@@ -1,4 +1,6 @@
 """
+Same as model01.py, but with a different architecture
+
 https://github.com/rasmusbergpalm/vnca/blob/dmg-double-celeba/vae-nca.py
 https://github.com/rasmusbergpalm/vnca/tree/dmg_celebA_baseline
 https://github.com/rasmusbergpalm/vnca/blob/dmg_celebA_baseline/modules/vae.py#L88
@@ -28,39 +30,7 @@ from tensorflow_probability import distributions as tfd
 
 from models.loss import iwae_loss
 from models.model import Model
-from utils import (MixtureDiscretizedLogistic, PixelMixtureDiscretizedLogistic,
-                   logmeanexp)
-
-
-class SampleMerge(layers.Layer):
-    def __init__(self, *args: layers.Layer):
-        super().__init__()
-        self.seq = tf.keras.Sequential([*args])
-
-    def call(self, x, **kwargs):
-        in_shape = x.shape  # [samples, batch, h, w, c] or [batch, h, w, c]
-
-        # --- merge sample and batch dim
-        x = tf.reshape(x, [-1, *in_shape[-3:]])
-
-        out = self.seq(x)
-
-        # ---- unmerge sample and batch dim
-        out_shape = out.shape
-        out = tf.reshape(out, [*in_shape[:-3], *out_shape[-3:]])
-
-        return out
-
-
-class BernoulliWrapper(tfd.Bernoulli):
-    def __init__(self, *args, **kwargs):
-        super(BernoulliWrapper, self).__init__(*args, **kwargs)
-
-    def mean(self, n=100, **kwargs):
-        return super(BernoulliWrapper, self).mean(**kwargs)
-
-    def sample(self, **kwargs):
-        return tf.nn.sigmoid(self.logits)
+from utils import DiscretizedLogistic
 
 
 def Conv2D(*args, **kwargs):
@@ -71,7 +41,7 @@ def Conv2DTranspose(*args, **kwargs):
     return conv2DWrap(*args, transpose=True, **kwargs)
 
 
-class conv2DWrap(tf.keras.layers.Layer):
+class conv2DWrap(layers.Layer):
     """
     Wrapper around convolutional operations to allow for multiple leading dimensions.
 
@@ -83,7 +53,7 @@ class conv2DWrap(tf.keras.layers.Layer):
         super(conv2DWrap, self).__init__()
 
         self.conv = (
-            tf.keras.layers.Conv2DTranspose(*args, **kwargs)
+            layers.Conv2DTranspose(*args, **kwargs)
             if transpose
             else tf.keras.layers.Conv2D(*args, **kwargs)
         )
@@ -104,9 +74,131 @@ class conv2DWrap(tf.keras.layers.Layer):
         return out
 
 
-class Model01(Model, tf.keras.Model):
+class GatedBlock(layers.Layer):
+    """https://arxiv.org/pdf/1612.08083.pdf"""
+    def __init__(self,
+                 filters=64,
+                 activation=tf.nn.relu,
+                 **kwargs):
+        super().__init__(**kwargs)
+
+        self.l1 = layers.Conv2D(filters, kernel_size=3, strides=1, padding="same", activation=activation)
+        self.l2 = layers.Conv2D(2 * filters, kernel_size=3, strides=1, padding="same", activation=activation)
+
+    def call(self, inputs, **kwargs):
+        block_input = self.l1(inputs)
+        A, B = tf.split(self.l2(block_input), 2, axis=-1)
+        H = A * tf.nn.sigmoid(B)
+        return H + block_input
+
+
+class DiscretizedLogisticForPixels(layers.Layer):
+    """https://github.com/openai/vdvae/blob/main/vae_helpers.py#L63
+    Instead of
+
+    p(r,g,b|z) = p(r|z)p(g|z)p(b|z)
+
+    do something more like
+
+    p(r,g,b|z) = p(r|z)p(g|r,z)p(b|r,g,z)
+
+    for each pixel we need:
+    - 1 set of mixture logits, same for all subpixels (not needed for single discretized)
+    - 3 loc, separate for each subpixel
+    - 3 logscale, separate for each subpixel
+    - 3 coefficients in [-1:1] : 1 for p(g|r) and 2 for p(b|r,g)
+
+    """
+    def __init__(self, **kwargs):
+        super(DiscretizedLogisticForPixels, self).__init__(**kwargs)
+
+    def call(self, inputs, **kwargs):
+        loc, logscale, coeffs = tf.split(inputs, 3, axis=-1)
+
+        loc = loc + 0.5
+        logscale = tf.maximum(logscale - 1, -7)
+        coeffs = tf.nn.tanh(coeffs)
+
+        # ---- here we map the R-loc instead of the actual R-pixel value
+        # p(g|r)
+        m2 = (loc[..., 1] + coeffs[..., 0] * loc[..., 0])[..., None]
+        # p(b|r,g)
+        m3 = (loc[..., 2] + coeffs[..., 1] * loc[..., 0] + coeffs[..., 2] * loc[..., 1])[..., None]
+
+        # ---- concatenate the means
+        means = tf.concat([loc[..., 1][..., None], m2, m3], axis=-1)
+
+        return means, logscale
+
+
+class Encoder(tf.keras.Model):
+    def __init__(self,
+                 n_latent=20,
+                 **kwargs):
+        super().__init__(**kwargs)
+
+        kernel_size = 4
+        activation = tf.nn.relu
+
+        self.c1 = tf.keras.Sequential([
+            layers.Conv2D(32, kernel_size=kernel_size, strides=2, padding="same",
+                          activation=activation),
+            layers.Conv2D(64, kernel_size=kernel_size, strides=2, padding="same",
+                          activation=activation),
+            layers.Conv2D(128, kernel_size=3, strides=1, padding="same",
+                          activation=activation),
+            *[GatedBlock(64) for _ in range(4)]
+        ])
+
+        # ---- dense
+        self.dense = layers.Dense(n_latent * 2)
+
+    def call(self, x, **kwargs):
+        shape = x.shape
+        h = self.c1(x)
+        h = tf.reshape(h, [*shape[:-3], -1])  # flatten
+        return self.dense(h)
+
+
+class Decoder(tf.keras.Model):
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+
+        kernel_size = 4
+        activation = tf.nn.relu
+
+        self.dense = layers.Dense(64 * 8 * 8, activation=activation)
+        self.c1 = tf.keras.Sequential([
+            layers.Conv2D(128, kernel_size=3, strides=1, padding="same", activation=activation),
+            *[GatedBlock(64) for _ in range(4)],
+            layers.Conv2DTranspose(64, kernel_size=kernel_size, strides=2, padding="same",
+                                   activation=activation),
+            layers.Conv2DTranspose(32, kernel_size=kernel_size, strides=2, padding="same",
+                                   activation=activation),
+            layers.Conv2DTranspose(3 * 3, kernel_size=3, strides=1, padding="same")  # 3 channels with each 1 loc, logscale, coeff
+        ])
+
+        self.dlp = DiscretizedLogisticForPixels()
+
+    def call(self, z, **kwargs):
+        shape = z.shape  # [samples, batch, dims] or [batch, dims]
+        h = self.dense(z)
+        # ---- merge sample and batch dimensions and reshape from dense to conv, mirrored from encoder
+        h = tf.reshape(h, [-1, 8, 8, 64])
+        parameters = self.c1(h)
+        loc, logscale = self.dlp(parameters)
+        shape2 = loc.shape # [(samples) x batch, h, w, nmix * 10]
+
+        # ---- unmerge sample and batch reshape
+        loc = tf.reshape(loc, [*shape[:-1], *shape2[-3:]])  # [samples, batch, image]
+        logscale = tf.reshape(logscale, [*shape[:-1], *shape2[-3:]])  # [samples, batch, image]
+
+        return loc, logscale
+
+
+class Model05(Model, tf.keras.Model):
     def __init__(self):
-        super(Model01, self).__init__()
+        super(Model05, self).__init__()
 
         self.optimizer = tf.keras.optimizers.Adamax(1e-3)
         self.n_samples = 10
@@ -120,45 +212,9 @@ class Model01(Model, tf.keras.Model):
         # TODO: encoder/decoder: https://github.com/rasmusbergpalm/vnca/blob/dmg_celebA_baseline/baseline_celebA.py#L25
         # TODO: https://github.com/nbip/VAE-natural-images/blob/main/models/hvae.py
         # https://github.com/AntixK/PyTorch-VAE/blob/master/models/iwae.py
-        self.encoder = tf.keras.Sequential(
-            [
-                Conv2D(
-                    32, kernel_size=5, strides=2, padding="same", activation=tf.nn.elu
-                ),
-                Conv2D(
-                    64, kernel_size=5, strides=2, padding="same", activation=tf.nn.elu
-                ),
-                Conv2D(
-                    128, kernel_size=5, strides=2, padding="same", activation=tf.nn.elu
-                ),
-                Conv2D(
-                    2 * 256, kernel_size=5, strides=2, padding="same", activation=None,
-                    kernel_initializer=tf.keras.initializers.RandomNormal(mean=0.0, stddev=0.01, seed=None)
-                ),
-            ]
-        )
+        self.encoder = Encoder()
 
-        self.decoder = tf.keras.Sequential(
-            [
-                Conv2DTranspose(
-                    128, kernel_size=5, strides=2, padding="same", activation=tf.nn.elu
-                ),
-                Conv2DTranspose(
-                    64, kernel_size=5, strides=2, padding="same", activation=tf.nn.elu
-                ),
-                Conv2DTranspose(
-                    32, kernel_size=5, strides=2, padding="same", activation=tf.nn.elu
-                ),
-                Conv2DTranspose(
-                    100,
-                    kernel_size=5,
-                    strides=2,
-                    padding="same",
-                    activation=None,
-                    kernel_initializer="zeros",
-                ),
-            ]
-        )
+        self.decoder = Decoder()
 
     # TODO: debug, why can't I use tf.function here?
     # Looks like it has to return tensors
@@ -173,18 +229,11 @@ class Model01(Model, tf.keras.Model):
         loc, logscale = tf.split(q, num_or_size_splits=2, axis=-1)
         return tfd.Normal(loc, tf.nn.softplus(logscale) + 1e-6)
 
-    # def decode(self, z):
-    #     logits = self.decoder(z)
-    #     return PixelMixtureDiscretizedLogistic(logits)
-
-    # def decode(self, z):
-    #     logits = self.decoder(z)
-    #     return BernoulliWrapper(logits=logits[..., :3], dtype=tf.float32)
-    #     # return tfd.Bernoulli(logits=logits[..., :3], dtype=tf.float32)
-
     def decode(self, z):
-        logits = self.decoder(z)
-        return MixtureDiscretizedLogistic(logits)
+        loc, logscale = self.decoder(z)
+        loc = loc + 0.5
+        logscale = tf.maximum(logscale - 1., -7.)
+        return DiscretizedLogistic(loc=loc, logscale=logscale, low=0., high=1., levels=256.)
 
     @tf.function
     def train_step(self, x):
@@ -305,10 +354,10 @@ class Model01(Model, tf.keras.Model):
         return iter(ds_train), iter(ds_val), ds_test
 
     def save(self, fp):
-        self.save_weights(fp)
+        self.save_weights(f"{fp}_05")
 
     def load(self, fp):
-        self.load_weights(fp)
+        self.load_weights(f"{fp}_05")
 
     def init_tensorboard(self, name: str = None) -> None:
         experiment = name or "tensorboard"
@@ -341,7 +390,7 @@ if __name__ == "__main__":
     if bin:
         x = np.floor(x * 256.0) / 255.0
 
-    model = Model01()
+    model = Model05()
 
     x, y = next(model.train_loader)
 
@@ -363,7 +412,6 @@ if __name__ == "__main__":
     # model.save_weights('saved_weights')
     # model.load_weights('saved_weights')
     # model.load_weights("best")
-    model.load_weights("latest")
 
     # ---- test model reconstructions
     x = x[0][None, :]
@@ -375,18 +423,8 @@ if __name__ == "__main__":
     mean = tf.reduce_mean(x_samples, axis=0)
 
     fig, ax = plt.subplots()
-    ax.imshow(mean[0, 0, :])
-    plt.show()
-    plt.close()
-    fig, ax = plt.subplots()
-    ax.imshow(x_samples[0, 0, 0, :])
-    plt.show()
-    plt.close()
-
-    # ---- generate from the prior
-    samples, recs = model._plot_samples(x)
-    fig, ax = plt.subplots()
-    ax.imshow(samples[2, 0, :])
+    # ax.imshow(mean[0, 0, :])
+    ax.imshow(pxz.mean()[0, 0, :])
     plt.show()
     plt.close()
 
@@ -444,3 +482,4 @@ if __name__ == "__main__":
     #     if i % (10 // 2) == 0:
     #         print("------------")
     #     print("{:02d}:".format(i), next(iterator))
+

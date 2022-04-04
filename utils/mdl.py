@@ -83,8 +83,11 @@ class MixtureDiscretizedLogistic(tfd.Distribution):
         )
 
         # ---- sum over mixture components
-        # ---- [batch, h, w, ch]
-        return tf.reduce_logsumexp(weighted_log_probs, axis=-1)
+        # ---- [batch, h, w]
+        lp = tf.reduce_logsumexp(weighted_log_probs, axis=-1)
+
+        # ---- extend last (channel) dimension to be similar to other loss functions
+        return tf.expand_dims(lp, axis=-1)
 
     def _split_params(self):
         """Split self._parameters into loc, logscale coeffs and mix_logits"""
