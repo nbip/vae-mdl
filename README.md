@@ -9,3 +9,6 @@ https://github.com/addtt/ladder-vae-pytorch/blob/master/lib/likelihoods.py#L117
 
 ## Notes
 In a decoder, if you are using `stride=2` from your second-to-last to last layer, each set of 2x2 pixel is a linear projection of some single pixel in the previous layer. Maybe that is not desirable. Instead have one more conv layer in the end with `stride=1`  
+
+## Learnings:
+In the loss I was reducing over last three axes, but when I changed the latent variable to dense from h, w, c this caused trouble. 

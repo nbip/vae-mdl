@@ -33,57 +33,18 @@ from models.model import Model
 from utils import MixtureDiscretizedLogistic
 
 
-def Conv2D(*args, **kwargs):
-    return conv2DWrap(*args, transpose=False, **kwargs)
-
-
-def Conv2DTranspose(*args, **kwargs):
-    return conv2DWrap(*args, transpose=True, **kwargs)
-
-
-class conv2DWrap(layers.Layer):
-    """
-    Wrapper around convolutional operations to allow for multiple leading dimensions.
-
-    Example:
-    in [samples, batch, h, w, c] -> intermediate [samples * batch, ...] -> out [samples, batch, h2, w2, c2]
-    """
-
-    def __init__(self, *args, transpose=False, **kwargs):
-        super(conv2DWrap, self).__init__()
-
-        self.conv = (
-            layers.Conv2DTranspose(*args, **kwargs)
-            if transpose
-            else tf.keras.layers.Conv2D(*args, **kwargs)
-        )
-
-    def call(self, x, **kwargs):
-        in_shape = x.shape  # [samples, batch, h, w, c] or [batch, h, w, c]
-
-        # --- merge sample and batch dim
-        x = tf.reshape(x, [-1, *in_shape[-3:]])
-
-        # ---- do the conv
-        out = self.conv(x)
-
-        # ---- unmerge sample and batch dim
-        out_shape = out.shape
-        out = tf.reshape(out, [*in_shape[:-3], *out_shape[-3:]])
-
-        return out
-
-
 class GatedBlock(layers.Layer):
     """https://arxiv.org/pdf/1612.08083.pdf"""
-    def __init__(self,
-                 filters=64,
-                 activation=tf.nn.relu,
-                 **kwargs):
+
+    def __init__(self, filters=64, activation=tf.nn.relu, **kwargs):
         super().__init__(**kwargs)
 
-        self.l1 = layers.Conv2D(filters, kernel_size=3, strides=1, padding="same", activation=activation)
-        self.l2 = layers.Conv2D(2 * filters, kernel_size=3, strides=1, padding="same", activation=activation)
+        self.l1 = layers.Conv2D(
+            filters, kernel_size=3, strides=1, padding="same", activation=activation
+        )
+        self.l2 = layers.Conv2D(
+            2 * filters, kernel_size=3, strides=1, padding="same", activation=activation
+        )
 
     def call(self, inputs, **kwargs):
         block_input = self.l1(inputs)
@@ -93,23 +54,34 @@ class GatedBlock(layers.Layer):
 
 
 class Encoder(tf.keras.Model):
-    def __init__(self,
-                 n_latent=20,
-                 **kwargs):
+    def __init__(self, n_latent=20, **kwargs):
         super().__init__(**kwargs)
 
         kernel_size = 4
         activation = tf.nn.relu
 
-        self.c1 = tf.keras.Sequential([
-            layers.Conv2D(32, kernel_size=kernel_size, strides=2, padding="same",
-                          activation=activation),
-            layers.Conv2D(64, kernel_size=kernel_size, strides=2, padding="same",
-                          activation=activation),
-            layers.Conv2D(128, kernel_size=3, strides=1, padding="same",
-                          activation=activation),
-            *[GatedBlock(64) for _ in range(4)]
-        ])
+        self.c1 = tf.keras.Sequential(
+            [
+                layers.Conv2D(
+                    32,
+                    kernel_size=kernel_size,
+                    strides=2,
+                    padding="same",
+                    activation=activation,
+                ),
+                layers.Conv2D(
+                    64,
+                    kernel_size=kernel_size,
+                    strides=2,
+                    padding="same",
+                    activation=activation,
+                ),
+                layers.Conv2D(
+                    128, kernel_size=3, strides=1, padding="same", activation=activation
+                ),
+                *[GatedBlock(64) for _ in range(4)],
+            ]
+        )
 
         # ---- dense
         self.dense = layers.Dense(n_latent * 2)
@@ -130,15 +102,29 @@ class Decoder(tf.keras.Model):
 
         self.dense = layers.Dense(64 * 8 * 8, activation=activation)
 
-        self.c1 = tf.keras.Sequential([
-            layers.Conv2D(128, kernel_size=3, strides=1, padding="same", activation=activation),
-            *[GatedBlock(64) for _ in range(4)],
-            layers.Conv2DTranspose(64, kernel_size=kernel_size, strides=2, padding="same",
-                                   activation=activation),
-            layers.Conv2DTranspose(32, kernel_size=kernel_size, strides=2, padding="same",
-                                   activation=activation),
-            layers.Conv2DTranspose(100, kernel_size=3, strides=1, padding="same")
-        ])
+        self.c1 = tf.keras.Sequential(
+            [
+                layers.Conv2D(
+                    128, kernel_size=3, strides=1, padding="same", activation=activation
+                ),
+                *[GatedBlock(64) for _ in range(4)],
+                layers.Conv2DTranspose(
+                    64,
+                    kernel_size=kernel_size,
+                    strides=2,
+                    padding="same",
+                    activation=activation,
+                ),
+                layers.Conv2DTranspose(
+                    32,
+                    kernel_size=kernel_size,
+                    strides=2,
+                    padding="same",
+                    activation=activation,
+                ),
+                layers.Conv2DTranspose(100, kernel_size=3, strides=1, padding="same"),
+            ]
+        )
 
     def call(self, z, **kwargs):
         shape = z.shape  # [samples, batch, dims] or [batch, dims]
@@ -149,7 +135,9 @@ class Decoder(tf.keras.Model):
         shape2 = parameters.shape  # [(samples) x batch, h, w, nmix * 10]
 
         # ---- unmerge sample and batch reshape
-        parameters = tf.reshape(parameters, [*shape[:-1], *shape2[-3:]])  # [(samples), batch, h, w, nmix * 10]
+        parameters = tf.reshape(
+            parameters, [*shape[:-1], *shape2[-3:]]
+        )  # [(samples), batch, h, w, nmix * 10]
 
         return parameters
 
@@ -166,6 +154,9 @@ class Model04(Model, tf.keras.Model):
         self.loss_fn = iwae_loss
 
         self.train_loader, self.val_loader, self.ds_test = self.setup_data()
+
+        self.pz = tfd.Normal(0.0, 1.0)
+        self.pz.axes = [-1]
 
         # TODO: encoder/decoder: https://github.com/rasmusbergpalm/vnca/blob/dmg_celebA_baseline/baseline_celebA.py#L25
         # TODO: https://github.com/nbip/VAE-natural-images/blob/main/models/hvae.py
@@ -184,40 +175,31 @@ class Model04(Model, tf.keras.Model):
     def encode(self, x):
         q = self.encoder(x)
         loc, logscale = tf.split(q, num_or_size_splits=2, axis=-1)
-        return tfd.Normal(loc, tf.nn.softplus(logscale) + 1e-6)
+        qzx = tfd.Normal(loc, tf.nn.softplus(logscale) + 1e-6)
+        qzx.axes = [-1]  # specify axes to sum over in log_prob
+        return qzx
 
     def decode(self, z):
         logits = self.decoder(z)
-        return MixtureDiscretizedLogistic(logits)
+        p = MixtureDiscretizedLogistic(logits)
+        p.axes = [-1, -2, -3]  # specify axes to sum over in log_prob
+        return p
 
     @tf.function
     def train_step(self, x):
         with tf.GradientTape() as tape:
             z, qzx, pxz = self(x, n_samples=self.n_samples)
-            loss, metrics = self.loss_fn(z, qzx, x, pxz)
+            loss, metrics = self.loss_fn(x, z, self.pz, qzx, pxz)
 
-        # assert ~tf.math.is_nan(loss), "nans in loss"
         grads = tape.gradient(loss, self.trainable_weights)
         # grads = [tf.clip_by_norm(g, clip_norm=10.0) for g in grads]
-
-        # for g in grads:
-        #     assert (
-        #         tf.reduce_sum(tf.cast(tf.math.is_nan(g), tf.float32)) == 0
-        #     ), "nans in grads"
-
         self.optimizer.apply_gradients(zip(grads, self.trainable_weights))
-
-        # for w in self.trainable_weights:
-        #     assert (
-        #         tf.reduce_sum(tf.cast(tf.math.is_nan(w), tf.float32)) == 0
-        #     ), "nans in updated weights"
-
         return loss, metrics
 
     @tf.function
     def val_step(self, x):
         z, qzx, pxz = self(x, n_samples=self.n_samples)
-        loss, metrics = self.loss_fn(z, qzx, x, pxz)
+        loss, metrics = self.loss_fn(x, z, self.pz, qzx, pxz)
         return loss, metrics
 
     def train_batch(self):
@@ -436,4 +418,3 @@ if __name__ == "__main__":
     #     if i % (10 // 2) == 0:
     #         print("------------")
     #     print("{:02d}:".format(i), next(iterator))
-

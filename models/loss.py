@@ -4,45 +4,60 @@ from tensorflow_probability import distributions as tfd
 from utils import logmeanexp
 
 
-def iwae_loss(z, qzx, x, pxz):
-    pz = tfd.Normal(0, 1)
+# Adding a property to all tfd.Distrubtion distributions
+# https://stackoverflow.com/a/54522123
+# Should be run when importing the below loss functions.
+# See test/test_tfd_distribution
+@property
+def axes(self):
+    return self._axes
 
-    lpz = tf.reduce_sum(pz.log_prob(z), axis=[-1, -2, -3])
 
-    lqzx = tf.reduce_sum(qzx.log_prob(z), axis=[-1, -2, -3])
+@axes.setter
+def axes(self, axes):
+    self._axes = axes
 
-    # for mdl: lpxz is already summed over channels
-    # lpxz = tf.reduce_sum(pxz.log_prob(x), axis=[-1, -2])
-    lpxz = tf.reduce_sum(pxz.log_prob(x), axis=[-1, -2, -3])
+
+tfd.Distribution.axes = axes
+
+
+def iwae_loss(x, z, pz, qzx, pxz):
+
+    lpz = tf.reduce_sum(pz.log_prob(z), axis=pz.axes)
+
+    lqzx = tf.reduce_sum(qzx.log_prob(z), axis=qzx.axes)
+
+    lpxz = tf.reduce_sum(pxz.log_prob(x), axis=pxz.axes)
 
     log_w = lpxz + (lpz - lqzx)
 
+    # logmeanexp over samples, average over batch
     iwae_elbo = tf.reduce_mean(logmeanexp(log_w, axis=0), axis=-1)
-    bpd = -iwae_elbo / (tf.math.log(2.0) * 32 * 32 * 3)
+    bpd = -iwae_elbo / (tf.math.log(2.0) * 32.0 * 32.0 * 3.0)
+    # bits_pr_dim:
     # https://github.com/rasmusbergpalm/vnca/blob/main/modules/vnca.py#L185
     # https://github.com/Rayhane-mamah/Efficient-VDVAE/blob/main/efficient_vdvae_torch/model/losses.py#L146
 
-    snis = tf.math.log_softmax(log_w)
-    kl = snis * (lpz - lqzx)
+    log_snis = tf.math.log_softmax(log_w)
+    kl = -tf.reduce_mean(lpz - lqzx, axis=0)
 
-    return bpd, {
-        "iwae_elbo": -iwae_elbo,
+    return -iwae_elbo, {
+        "iwae_elbo": iwae_elbo,
         "bpd": bpd,
-        "lpxz": lpxz + snis,
+        "lpxz": lpxz,  # tf.reduce_logsumexp(lpxz + log_snis, axis=0),
         "lqzx": lqzx,
         "lpz": lpz,
         "kl": kl,
     }
 
 
-def elbo_loss(z, qzx, x, pxz):
-    pz = tfd.Normal(0, 1)
+def elbo_loss(x, z, pz, qzx, pxz):
 
-    lpz = tf.reduce_sum(pz.log_prob(z), axis=[-1, -2, -3])
+    lpz = tf.reduce_sum(pz.log_prob(z), axis=pz.axes)
 
-    lqzx = tf.reduce_sum(qzx.log_prob(z), axis=[-1, -2, -3])
+    lqzx = tf.reduce_sum(qzx.log_prob(z), axis=qzx.axes)
 
-    lpxz = tf.reduce_sum(pxz.log_prob(x), axis=[-1, -2])
+    lpxz = tf.reduce_sum(pxz.log_prob(x), axis=pxz.axes)
 
     log_w = lpxz + (lpz - lqzx)
 

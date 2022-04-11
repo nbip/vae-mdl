@@ -87,6 +87,9 @@ class Model02(Model, tf.keras.Model):
 
         self.train_loader, self.val_loader, self.ds_test = self.setup_data()
 
+        self.pz = tfd.Normal(0.0, 1.0)
+        self.pz.axes = [-1, -2, -3]
+
         # TODO: encoder/decoder: https://github.com/rasmusbergpalm/vnca/blob/dmg_celebA_baseline/baseline_celebA.py#L25
         # TODO: https://github.com/nbip/VAE-natural-images/blob/main/models/hvae.py
         # https://github.com/AntixK/PyTorch-VAE/blob/master/models/iwae.py
@@ -102,8 +105,14 @@ class Model02(Model, tf.keras.Model):
                     128, kernel_size=5, strides=2, padding="same", activation=tf.nn.elu
                 ),
                 layers.Conv2D(
-                    2 * 256, kernel_size=5, strides=2, padding="same", activation=None,
-                    kernel_initializer=tf.keras.initializers.RandomNormal(mean=0.0, stddev=0.01, seed=None)
+                    2 * 256,
+                    kernel_size=5,
+                    strides=2,
+                    padding="same",
+                    activation=None,
+                    kernel_initializer=tf.keras.initializers.RandomNormal(
+                        mean=0.0, stddev=0.01, seed=None
+                    ),
                 ),
             ]
         )
@@ -141,43 +150,35 @@ class Model02(Model, tf.keras.Model):
     def encode(self, x):
         q = self.encoder(x)
         loc, logscale = tf.split(q, num_or_size_splits=2, axis=-1)
-        return tfd.Normal(loc, tf.nn.softplus(logscale) + 1e-6)
+        qzx = tfd.Normal(loc, tf.nn.softplus(logscale) + 1e-6)
+        qzx.axes = [-1, -2, -3]  # specify axes to sum over in log_prob
+        return qzx
 
     def decode(self, z):
         parameters = self.decoder(z)
         loc, logscale = tf.split(parameters, num_or_size_splits=2, axis=-1)
         loc = loc + 0.5
         logscale = tf.maximum(logscale, -7.0)
-        return DiscretizedLogistic(loc, logscale, low=0.0, high=1.0, levels=256.)
+        p = DiscretizedLogistic(loc, logscale, low=0.0, high=1.0, levels=256.0)
+        p.axes = [-1, -2, -3]  # specify axes to sum over in log_prob
+        return p
 
     @tf.function
     def train_step(self, x):
         with tf.GradientTape() as tape:
             z, qzx, pxz = self(x, n_samples=self.n_samples)
-            loss, metrics = self.loss_fn(z, qzx, x, pxz)
+            loss, metrics = self.loss_fn(x, z, self.pz, qzx, pxz)
 
-        # assert ~tf.math.is_nan(loss), "nans in loss"
         grads = tape.gradient(loss, self.trainable_weights)
-        # grads = [tf.clip_by_norm(g, clip_norm=10.0) for g in grads]
-
-        # for g in grads:
-        #     assert (
-        #         tf.reduce_sum(tf.cast(tf.math.is_nan(g), tf.float32)) == 0
-        #     ), "nans in grads"
-
+        grads = [tf.clip_by_norm(g, clip_norm=10.0) for g in grads]
         self.optimizer.apply_gradients(zip(grads, self.trainable_weights))
-
-        # for w in self.trainable_weights:
-        #     assert (
-        #         tf.reduce_sum(tf.cast(tf.math.is_nan(w), tf.float32)) == 0
-        #     ), "nans in updated weights"
 
         return loss, metrics
 
     @tf.function
     def val_step(self, x):
         z, qzx, pxz = self(x, n_samples=self.n_samples)
-        loss, metrics = self.loss_fn(z, qzx, x, pxz)
+        loss, metrics = self.loss_fn(x, z, self.pz, qzx, pxz)
         return loss, metrics
 
     def train_batch(self):
@@ -396,4 +397,3 @@ if __name__ == "__main__":
     #     if i % (10 // 2) == 0:
     #         print("------------")
     #     print("{:02d}:".format(i), next(iterator))
-

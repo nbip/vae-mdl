@@ -51,6 +51,8 @@ class MixtureDiscretizedLogistic(tfd.Distribution):
 
         self.low, self.high = -1.0, 1.0
 
+        self._axes = [-1, -2, -3]
+
     def _log_prob(self, x):
         """
         Mixture of discretized logistic distribution log probabilities.
@@ -251,6 +253,14 @@ class MixtureDiscretizedLogistic(tfd.Distribution):
 
     def _mean(self, n=100, **kwargs):
         return tf.reduce_mean(self.sample(n), axis=0)
+
+    @property
+    def axes(self):
+        return self._axes
+
+    @axes.setter
+    def axes(self, axes):
+        self._axes = axes
 
 
 if __name__ == "__main__":
