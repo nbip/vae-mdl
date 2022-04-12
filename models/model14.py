@@ -44,10 +44,10 @@ class DataSets:
 
         ds_train = (
             ds_train.shuffle(len(ds_train))
-                .repeat()
-                .map(normalize, num_parallel_calls=4)
-                .batch(batch_size)
-                .prefetch(4)
+            .repeat()
+            .map(normalize, num_parallel_calls=4)
+            .batch(batch_size)
+            .prefetch(4)
         )
 
         ds_val = (
@@ -246,6 +246,7 @@ class Model14(Model, tf.keras.Model):
 if __name__ == "__main__":
     # PYTHONPATH=. CUDA_VISIBLE_DEVICES=1 nohup python -u models/model14.py > models/model14.log &
     from trainer import train
+
     model = Model14()
     model.val_batch()
     train(model, n_updates=1_000_000, eval_interval=1000)

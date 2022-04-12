@@ -8,4 +8,6 @@ def logmeanexp(log_w, axis):
 
 
 def bernoullisample(x, seed=None):
-    return tf.cast(tf.math.greater(x, tf.random.uniform(x.shape, seed=seed)), tf.float32)
+    return tf.cast(
+        tf.math.greater(x, tf.random.uniform(x.shape, seed=seed)), tf.float32
+    )

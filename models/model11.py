@@ -9,31 +9,36 @@ import tensorflow as tf
 import tensorflow_datasets as tfds
 from tensorflow.keras import layers
 from tensorflow_probability import distributions as tfd
+from tqdm import tqdm
 
 import utils
 from models.loss import iwae_loss
 from models.model import Model
 
 
-class LearningRate(object):
-    """https://stackoverflow.com/a/6192298"""
+class GlobalStep(object):
+    """
+    https://stackoverflow.com/a/6192298
+    https://codereview.stackexchange.com/q/253675
+    """
+
     def __init__(self):
-        self._learning_rate = 0.001
+        self._value = 0
         self._observers = []
 
     @property
-    def learning_rate(self):
-        return self._learning_rate
+    def value(self):
+        return self._value
 
-    @learning_rate.setter
-    def learning_rate(self, value):
-        self._learning_rate = value
+    @value.setter
+    def value(self, value):
+        self._value = value
         for callback in self._observers:
-            print('announcing change')
-            callback(self._learning_rate)
+            # print('announcing change')
+            callback(self._value)
 
     def bind_to(self, callback):
-        print('bound')
+        # print('bound')
         self._observers.append(callback)
 
 
@@ -139,9 +144,13 @@ class Model11(Model, tf.keras.Model):
     def __init__(self):
         super(Model11, self).__init__()
 
-        self.optimizer = tf.keras.optimizers.Adamax(1e-4)
+        # self.optimizer = tf.keras.optimizers.Adamax(1e-3)
+        self.optimizer = tf.keras.optimizers.Adam(1e-3)
         self.n_samples = 5
-        self.global_step = 0
+        self.global_step = GlobalStep()
+        self.global_step.bind_to(
+            self.update_learning_rate
+        )  # add callback to update learning rate when gs.value is changed
         self.init_tensorboard()
 
         self.loss_fn = iwae_loss
@@ -154,16 +163,12 @@ class Model11(Model, tf.keras.Model):
 
         self.ds = DataSets()
 
-        self._observers = []
-        self.learning_rate = LearningRate()
-        self.learning_rate.bind_to(self.update_learning_rate)
-
-    def bind_to(self, callback):
-        print('bound')
-        self._observers.append(callback)
-
-    def update_learning_rate(self, global_step):
-        print("Changing learningrate")
+    def update_learning_rate(self, value):
+        if value in [2 ** i * 7000 for i in range(8)]:
+            old_lr = self.optimizer.learning_rate.numpy()
+            new_lr = 1e-3 * 10 ** (-value / (2 ** 7 * 7000))
+            self.optimizer.learning_rate.assign(new_lr)
+            print(f"Changing learningrate from {old_lr:.2e} to {new_lr:.2e}")
 
     def call(self, x, n_samples=1, **kwargs):
         qzx = self.encode(x)
@@ -201,7 +206,7 @@ class Model11(Model, tf.keras.Model):
     def train_batch(self):
         x, y = next(self.ds.train_loader)
         loss, metrics = self.train_step(x)
-        self.global_step += 1
+        self.global_step.value += 1
         return loss, metrics
 
     def val_batch(self):
@@ -210,22 +215,34 @@ class Model11(Model, tf.keras.Model):
         self.report(x, metrics)
         return loss, metrics
 
-    def test(self):
-        # TODO: test: https://github.com/rasmusbergpalm/vnca/blob/dmg_celebA_baseline/modules/vae.py#L124
-        pass
+    def test(self, n_samples):
+        llh = np.nan * np.zeros(len(self.ds.ds_test))
+
+        for i, (x, y) in enumerate(tqdm(self.ds.ds_test)):
+            z, qzx, pxz = self(x[None, :], n_samples=n_samples)
+            loss, metrics = self.loss_fn(x, z, self.pz, qzx, pxz)
+            llh[i] = metrics['iwae_elbo']
+
+        return llh.mean(), llh
 
     def report(self, x, metrics):
         samples, recs = self._plot_samples(x)
 
         with self.val_summary_writer.as_default():
-            tf.summary.image("Evaluation/img", x[0][None, :], step=self.global_step)
-            tf.summary.image("Evaluation/img_rec", recs[None, :], step=self.global_step)
             tf.summary.image(
-                "Evaluation/img_samp", samples[None, :], step=self.global_step
+                "Evaluation/img", x[0][None, :], step=self.global_step.value
+            )
+            tf.summary.image(
+                "Evaluation/img_rec", recs[None, :], step=self.global_step.value
+            )
+            tf.summary.image(
+                "Evaluation/img_samp", samples[None, :], step=self.global_step.value
             )
             for key, value in metrics.items():
                 tf.summary.scalar(
-                    f"Evalutation/{key}", value.numpy().mean(), step=self.global_step
+                    f"Evalutation/{key}",
+                    value.numpy().mean(),
+                    step=self.global_step.value,
                 )
 
     def _plot_samples(self, x):
@@ -278,6 +295,27 @@ if __name__ == "__main__":
     # PYTHONPATH=. CUDA_VISIBLE_DEVICES=1 nohup python -u models/model11.py > models/model11.log &
     from trainer import train
 
+    # os.environ["CUDA_VISIBLE_DEVICES"] = ""
+    # tf.config.threading.set_intra_op_parallelism_threads(2)
+    # tf.config.threading.set_inter_op_parallelism_threads(2)
+
     model = Model11()
+
+    # intialize model
     model.val_batch()
-    train(model, n_updates=1_000_000, eval_interval=1000)
+
+    # approximation to the train mean
+    x, y = next(model.ds.train_loader)
+    x = x.numpy()
+    train_mean = np.mean(x.reshape(x.shape[0], -1), axis=0)
+    bias = -np.log(1.0 / np.clip(train_mean, 0.001, 0.999) - 1.0)
+
+    # set the output layer bias
+    model.decoder.trainable_weights[-1].assign(bias)
+
+    train(model, n_updates=1_400_000, eval_interval=1000)
+
+    model.load("best")
+    mean_llh, llh = model.test(5000)
+
+    print(mean_llh)
