@@ -1,86 +1,92 @@
 """
-Reproduce IWAE results on statically binarized mnist
+CELEB_A: Discretized logistic loss with tanh on logstd
+Looks good.
 """
+import glob
 import os
 from datetime import datetime
 
 import numpy as np
 import tensorflow as tf
-import tensorflow_datasets as tfds
 from tensorflow.keras import layers
 from tensorflow_probability import distributions as tfd
 from tqdm import tqdm
 
-import utils
 from models.loss import iwae_loss
 from models.model import Model
+from utils import DiscretizedLogistic, GlobalStep
 
 
-class GlobalStep(object):
+def parse_tfrecord_tf(record):
     """
-    https://stackoverflow.com/a/6192298
-    https://codereview.stackexchange.com/q/253675
+    https://github.com/openai/glow
+    wget https://openaipublic.azureedge.net/glow-demo/data/celeba-tfr.tar
+    tar -xvf celeb-tfr.tar
+
+    # https://github.com/openai/glow/blob/master/data_loaders/get_data.py#L10
     """
+    features = tf.io.parse_single_example(
+        record,
+        features={
+            "shape": tf.io.FixedLenFeature([3], tf.int64),
+            "data": tf.io.FixedLenFeature([], tf.string),
+            "label": tf.io.FixedLenFeature([1], tf.int64),
+        },
+    )
 
-    def __init__(self):
-        self._value = 0
-        self._observers = []
+    data, label, shape = features["data"], features["label"], features["shape"]
+    label = tf.cast(tf.reshape(label, shape=[]), dtype=tf.int32)
+    img = tf.io.decode_raw(data, tf.uint8)
 
-    @property
-    def value(self):
-        return self._value
+    img = tf.reshape(img, shape)
+    # img = tf.image.central_crop(img, 0.6)
+    img = tf.image.random_flip_left_right(img)
+    img = tf.image.resize(img, [64, 64])
+    return img, label
 
-    @value.setter
-    def value(self, value):
-        self._value = value
-        for callback in self._observers:
-            # print('announcing change')
-            callback(self._value)
 
-    def bind_to(self, callback):
-        # print('bound')
-        self._observers.append(callback)
+def get_celeba():
+
+    DS = []
+    for split in ["train", "validation"]:
+
+        filenames = glob.glob(f"data/celeba-tfr/{split}/*")
+        raw_dataset = tf.data.TFRecordDataset(filenames)
+
+        # https://github.com/openai/glow/blob/master/data_loaders/get_data.py#L42
+        dataset = raw_dataset.map(lambda x: parse_tfrecord_tf(x), num_parallel_calls=4)
+        DS.append(dataset)
+
+    return DS[0], DS[1], DS[1]  # No test-set here
 
 
 class DataSets:
     def __init__(self):
-
         self.train_loader, self.val_loader, self.ds_test = self.setup_data()
 
     @staticmethod
     def setup_data(data_dir=None):
         def normalize(img, label):
-            prob = tf.cast(img, tf.float32) / 255.0
-            img = utils.bernoullisample(prob, seed=42)
-            return img, label
+            return tf.cast((img), tf.float32) / 255.0, label
 
         batch_size = 128
-        data_dir = "/tmp/nsbi/data" if data_dir is None else data_dir
-        os.makedirs(data_dir, exist_ok=True)
+        val_batch_size = 500
+
+        ds_train, ds_val, ds_test = get_celeba()
 
         # https://stackoverflow.com/a/50453698
         # https://stackoverflow.com/a/49916221
-        (ds_train, ds_val, ds_test), ds_info = tfds.load(
-            "mnist",
-            split=["train", "test", "test"],
-            shuffle_files=True,
-            data_dir=data_dir,
-            with_info=True,
-            as_supervised=True,
-        )
-
         ds_train = (
             ds_train.map(normalize, num_parallel_calls=4)
-            .shuffle(len(ds_train))
+            .shuffle(batch_size * 80)
             .repeat()
             .batch(batch_size)
             .prefetch(4)
         )
-
         ds_val = (
             ds_val.map(normalize, num_parallel_calls=4)
             .repeat()
-            .batch(len(ds_val))
+            .batch(val_batch_size)
             .prefetch(4)
         )
 
@@ -89,62 +95,82 @@ class DataSets:
         return iter(ds_train), iter(ds_val), ds_test
 
 
-class BasicBlock(tf.keras.Model):
-    def __init__(self, n_hidden, n_latent, **kwargs):
-        super(BasicBlock, self).__init__(**kwargs)
-
-        self.l1 = layers.Dense(n_hidden, activation=tf.nn.tanh)
-        self.l2 = layers.Dense(n_hidden, activation=tf.nn.tanh)
-        self.lmu = layers.Dense(n_latent, activation=None)
-        self.lstd = layers.Dense(n_latent, activation=tf.exp)
-
-    def call(self, input, **kwargs):
-        h1 = self.l1(input)
-        h2 = self.l2(h1)
-        q_mu = self.lmu(h2)
-        q_std = self.lstd(h2)
-
-        qz_given_input = tfd.Normal(q_mu, q_std + 1e-6)
-
-        return qz_given_input
-
-
 class Encoder(tf.keras.Model):
-    def __init__(self, n_hidden, n_latent, **kwargs):
-        super(Encoder, self).__init__(**kwargs)
+    def __init__(self, n_latent):
+        super().__init__()
+        self.n_latent = n_latent
 
-        self.encode_x_to_z = BasicBlock(n_hidden, n_latent)
+        self.convs = tf.keras.Sequential(
+            [
+                layers.Conv2D(
+                    32, strides=1, kernel_size=3, padding="same", activation=tf.nn.relu
+                ),
+                layers.Conv2D(
+                    64, strides=2, kernel_size=3, padding="same", activation=tf.nn.relu
+                ),
+                layers.Conv2D(
+                    128, strides=2, kernel_size=3, padding="same", activation=tf.nn.relu
+                ),
+                layers.Conv2D(
+                    256, strides=2, kernel_size=3, padding="same", activation=tf.nn.relu
+                ),
+            ]
+        )
+
+        conv_out_dim = 64 // 2 ** 3 * 64 // 2 ** 3 * 256
+        self.fc = layers.Dense(2 * n_latent)
 
     def call(self, x, **kwargs):
-        x = tf.reshape(x, [x.shape[0], -1])
-        qzx = self.encode_x_to_z(x)
-        return qzx
+        out = self.convs(x)
+        out = tf.reshape(out, [out.shape[0], -1])
+        mu, logstd = tf.split(self.fc(out), num_or_size_splits=2, axis=-1)
+        return tfd.Normal(mu, tf.nn.softplus(logstd))
 
 
 class Decoder(tf.keras.Model):
-    def __init__(self, n_hidden, **kwargs):
-        super(Decoder, self).__init__(**kwargs)
+    def __init__(self, n_latent):
+        super().__init__()
+        self.n_latent = n_latent
+        self.out_shape = (64, 64, 3)
 
-        self.decode_z_to_x = tf.keras.Sequential(
+        self.base_size = [self.out_shape[0] // 2 ** 3, self.out_shape[1] // 2 ** 3, 128]
+        self.fc = layers.Dense(np.prod(self.base_size), activation=tf.nn.relu)
+
+        self.deconvs = tf.keras.Sequential(
             [
-                layers.Dense(n_hidden, activation=tf.nn.tanh),
-                layers.Dense(n_hidden, activation=tf.nn.tanh),
-                layers.Dense(784, activation=None),
+                layers.Conv2DTranspose(
+                    128, kernel_size=4, strides=2, padding="same", activation=tf.nn.relu
+                ),
+                layers.Conv2DTranspose(
+                    64, kernel_size=4, strides=2, padding="same", activation=tf.nn.relu
+                ),
+                layers.Conv2DTranspose(
+                    32, kernel_size=4, strides=2, padding="same", activation=tf.nn.relu
+                ),
+                layers.Conv2D(3 * 2, kernel_size=3, padding="same", activation=None),
             ]
         )
 
     def call(self, z, **kwargs):
-        logits = self.decode_z_to_x(z)
-        logits = tf.reshape(logits, [*z.shape[:2], 28, 28, 1])
-        pxz = tfd.Bernoulli(logits=logits)
+        h = self.fc(z)
+        # ---- merge sample and batch dimensions and reshape from dense to conv, mirrored from encoder
+        h = tf.reshape(h, [-1, *self.base_size])
+        out = self.deconvs(h)
+        out = tf.reshape(
+            out, [*z.shape[:-1], self.out_shape[0], self.out_shape[1], 3 * 2]
+        )
+        mu, logstd = tf.split(out, num_or_size_splits=2, axis=-1)
+        logstd = logstd - 2.0
+        # OBS! this is where you can control the scale
+        # pxz = DiscretizedLogistic(mu, logstd, low=0., high=1., levels=256)
+        pxz = DiscretizedLogistic(mu, tf.nn.tanh(logstd), low=0.0, high=1.0, levels=256)
         return pxz
 
 
-class Model11(Model, tf.keras.Model):
+class Model35(Model, tf.keras.Model):
     def __init__(self):
-        super(Model11, self).__init__()
+        super(Model35, self).__init__()
 
-        # self.optimizer = tf.keras.optimizers.Adamax(1e-3)
         self.optimizer = tf.keras.optimizers.Adam(1e-3)
         self.n_samples = 5
         self.global_step = GlobalStep()
@@ -158,8 +184,8 @@ class Model11(Model, tf.keras.Model):
         self.pz = tfd.Normal(0.0, 1.0)
         self.pz.axes = [-1]
 
-        self.encoder = Encoder(200, 100)
-        self.decoder = Decoder(200)
+        self.encoder = Encoder(20)
+        self.decoder = Decoder(20)
 
         self.ds = DataSets()
 
@@ -246,8 +272,8 @@ class Model11(Model, tf.keras.Model):
                 )
 
     def _plot_samples(self, x):
-        n, h, w, c = 8, 28, 28, 1
-        z, qzx, pxz = self(x[: n ** 2], n_samples=self.n_samples)
+        n, h, w, c = 8, 64, 64, 3
+        z, qzx, pxz = self(x[: n ** 2], n_samples=1)
         recs = pxz.mean()[0]  # [n_samples, batch, h, w, ch]
 
         canvas1 = np.random.rand(n * h, n * w, c)
@@ -259,7 +285,8 @@ class Model11(Model, tf.keras.Model):
 
         pz = tfd.Normal(tf.zeros_like(z), tf.ones_like(z))
         pxz = self.decode(pz.sample())
-        samples = tf.cast(pxz.sample(), tf.float32)[0]  # [n_samples, batch, h, w, ch]
+        # samples = tf.cast(pxz.sample(), tf.float32)[0]  # [n_samples, batch, h, w, ch]
+        samples = np.clip(pxz.mean()[0], 0.0, 1.0)  # [n_samples, batch, h, w, ch]
 
         canvas2 = np.random.rand(n * h, n * w, c)
         for i in range(n):
@@ -271,51 +298,57 @@ class Model11(Model, tf.keras.Model):
         return canvas2, canvas1
 
     def save(self, fp):
-        self.save_weights(f"{fp}_11")
+        self.save_weights(f"{fp}_35")
 
     def load(self, fp):
-        self.load_weights(f"{fp}_11")
+        self.load_weights(f"{fp}_35")
 
     def init_tensorboard(self, name: str = None) -> None:
         experiment = name or "tensorboard"
-        revision = os.environ.get("REVISION") or datetime.now().strftime(
-            "%Y%m%d-%H%M%S"
-        )
-        train_log_dir = f"/tmp/{experiment}/{revision}/train"
-        val_log_dir = f"/tmp/{experiment}/{revision}/val"
+        time = datetime.now().strftime("%Y%m%d-%H%M%S")
+        model = f"model35-{time}"
+        train_log_dir = f"/tmp/{experiment}/{model}/train"
+        val_log_dir = f"/tmp/{experiment}/{model}/val"
         self.train_summary_writer = tf.summary.create_file_writer(train_log_dir)
         self.val_summary_writer = tf.summary.create_file_writer(val_log_dir)
 
         # ---- directory for saving trained models
-        self.save_dir = f"./saved_models/{experiment}/{revision}"
+        self.save_dir = f"./saved_models/{experiment}/{model}"
         os.makedirs(self.save_dir, exist_ok=True)
 
 
 if __name__ == "__main__":
-    # PYTHONPATH=. CUDA_VISIBLE_DEVICES=1 nohup python -u models/model11.py > models/model11.log &
+    # PYTHONPATH=. CUDA_VISIBLE_DEVICES=1 nohup python -u models/model35.py > models/model35.log &
     from trainer import train
 
     # os.environ["CUDA_VISIBLE_DEVICES"] = ""
-    # tf.config.threading.set_intra_op_parallelism_threads(2)
-    # tf.config.threading.set_inter_op_parallelism_threads(2)
 
-    model = Model11()
+    model = Model35()
 
     # intialize model
     model.val_batch()
 
-    # approximation to the train mean
-    x, y = next(model.ds.train_loader)
-    x = x.numpy()
-    train_mean = np.mean(x.reshape(x.shape[0], -1), axis=0)
-    bias = -np.log(1.0 / np.clip(train_mean, 0.001, 0.999) - 1.0)
-
-    # set the output layer bias
-    model.decoder.trainable_weights[-1].assign(bias)
-
-    train(model, n_updates=1_400_000, eval_interval=1000)
+    train(model, n_updates=100_000, eval_interval=1000)
 
     model.load("best")
     mean_llh, llh = model.test(5000)
 
     print(mean_llh)
+
+    x, y = next(model.ds.train_loader)
+    model(x)
+    model.load("best")
+    qzx = model.encode(x)
+    z = qzx.sample(model.n_samples)
+    pxz = model.decode(z)
+
+    ones = tf.ones_like(z)
+
+    for i in [0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0]:
+        pxz = model.decode(i * ones)
+        print(f" |z|: {i}, pxz.scale: {np.mean(pxz.logscale):.4f}")
+        # print(np.std(pxz.loc))
+
+    for i in [0.0, -0.5, -1.0, -1.5, -2.0, -2.5, -3.0]:
+        pxz = model.decode(i * ones)
+        print(f" |z|: {i}, pxz.scale: {np.mean(pxz.logscale):.4f}")

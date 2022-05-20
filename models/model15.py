@@ -1,5 +1,5 @@
 """
-Reproduce IWAE results on statically binarized mnist
+Use IWAE setup with fake bernoulli loss on SVHN
 """
 import os
 from datetime import datetime
@@ -44,31 +44,30 @@ class GlobalStep(object):
 
 class DataSets:
     def __init__(self):
-
         self.train_loader, self.val_loader, self.ds_test = self.setup_data()
 
     @staticmethod
     def setup_data(data_dir=None):
         def normalize(img, label):
-            prob = tf.cast(img, tf.float32) / 255.0
-            img = utils.bernoullisample(prob, seed=42)
-            return img, label
+            return tf.cast((img), tf.float32) / 255.0, label
 
         batch_size = 128
+        val_batch_size = 500
         data_dir = "/tmp/nsbi/data" if data_dir is None else data_dir
         os.makedirs(data_dir, exist_ok=True)
 
-        # https://stackoverflow.com/a/50453698
-        # https://stackoverflow.com/a/49916221
         (ds_train, ds_val, ds_test), ds_info = tfds.load(
-            "mnist",
-            split=["train", "test", "test"],
+            # "cifar10",
+            "svhn_cropped",
+            split=["train", "test[0%:50%]", "test[50%:100%]"],
             shuffle_files=True,
             data_dir=data_dir,
             with_info=True,
             as_supervised=True,
         )
 
+        # https://stackoverflow.com/a/50453698
+        # https://stackoverflow.com/a/49916221
         ds_train = (
             ds_train.map(normalize, num_parallel_calls=4)
             .shuffle(len(ds_train))
@@ -76,11 +75,10 @@ class DataSets:
             .batch(batch_size)
             .prefetch(4)
         )
-
         ds_val = (
             ds_val.map(normalize, num_parallel_calls=4)
             .repeat()
-            .batch(len(ds_val))
+            .batch(val_batch_size)
             .prefetch(4)
         )
 
@@ -129,20 +127,20 @@ class Decoder(tf.keras.Model):
             [
                 layers.Dense(n_hidden, activation=tf.nn.tanh),
                 layers.Dense(n_hidden, activation=tf.nn.tanh),
-                layers.Dense(784, activation=None),
+                layers.Dense(3072, activation=None),
             ]
         )
 
     def call(self, z, **kwargs):
         logits = self.decode_z_to_x(z)
-        logits = tf.reshape(logits, [*z.shape[:2], 28, 28, 1])
-        pxz = tfd.Bernoulli(logits=logits)
+        logits = tf.reshape(logits, [*z.shape[:2], 32, 32, 3])
+        pxz = tfd.Bernoulli(logits=logits, dtype=tf.float32)
         return pxz
 
 
-class Model11(Model, tf.keras.Model):
+class Model15(Model, tf.keras.Model):
     def __init__(self):
-        super(Model11, self).__init__()
+        super(Model15, self).__init__()
 
         # self.optimizer = tf.keras.optimizers.Adamax(1e-3)
         self.optimizer = tf.keras.optimizers.Adam(1e-3)
@@ -246,7 +244,7 @@ class Model11(Model, tf.keras.Model):
                 )
 
     def _plot_samples(self, x):
-        n, h, w, c = 8, 28, 28, 1
+        n, h, w, c = 8, 32, 32, 3
         z, qzx, pxz = self(x[: n ** 2], n_samples=self.n_samples)
         recs = pxz.mean()[0]  # [n_samples, batch, h, w, ch]
 
@@ -259,7 +257,8 @@ class Model11(Model, tf.keras.Model):
 
         pz = tfd.Normal(tf.zeros_like(z), tf.ones_like(z))
         pxz = self.decode(pz.sample())
-        samples = tf.cast(pxz.sample(), tf.float32)[0]  # [n_samples, batch, h, w, ch]
+        # samples = tf.cast(pxz.sample(), tf.float32)[0]  # [n_samples, batch, h, w, ch]
+        samples = tf.cast(pxz.mean(), tf.float32)[0]  # [n_samples, batch, h, w, ch]
 
         canvas2 = np.random.rand(n * h, n * w, c)
         for i in range(n):
@@ -271,10 +270,10 @@ class Model11(Model, tf.keras.Model):
         return canvas2, canvas1
 
     def save(self, fp):
-        self.save_weights(f"{fp}_11")
+        self.save_weights(f"{fp}_15")
 
     def load(self, fp):
-        self.load_weights(f"{fp}_11")
+        self.load_weights(f"{fp}_15")
 
     def init_tensorboard(self, name: str = None) -> None:
         experiment = name or "tensorboard"
@@ -296,10 +295,10 @@ if __name__ == "__main__":
     from trainer import train
 
     # os.environ["CUDA_VISIBLE_DEVICES"] = ""
-    # tf.config.threading.set_intra_op_parallelism_threads(2)
-    # tf.config.threading.set_inter_op_parallelism_threads(2)
+    tf.config.threading.set_intra_op_parallelism_threads(2)
+    tf.config.threading.set_inter_op_parallelism_threads(2)
 
-    model = Model11()
+    model = Model15()
 
     # intialize model
     model.val_batch()

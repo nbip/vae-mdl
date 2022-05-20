@@ -1,5 +1,5 @@
 """
-Reproduce IWAE results on statically binarized mnist
+Train using samples from p(z), not an encoder. Discretized logistic loss.
 """
 import os
 from datetime import datetime
@@ -11,64 +11,40 @@ from tensorflow.keras import layers
 from tensorflow_probability import distributions as tfd
 from tqdm import tqdm
 
-import utils
 from models.loss import iwae_loss
 from models.model import Model
-
-
-class GlobalStep(object):
-    """
-    https://stackoverflow.com/a/6192298
-    https://codereview.stackexchange.com/q/253675
-    """
-
-    def __init__(self):
-        self._value = 0
-        self._observers = []
-
-    @property
-    def value(self):
-        return self._value
-
-    @value.setter
-    def value(self, value):
-        self._value = value
-        for callback in self._observers:
-            # print('announcing change')
-            callback(self._value)
-
-    def bind_to(self, callback):
-        # print('bound')
-        self._observers.append(callback)
+from utils import DiscretizedLogistic, GlobalStep, logmeanexp
 
 
 class DataSets:
     def __init__(self):
-
         self.train_loader, self.val_loader, self.ds_test = self.setup_data()
 
     @staticmethod
     def setup_data(data_dir=None):
         def normalize(img, label):
-            prob = tf.cast(img, tf.float32) / 255.0
-            img = utils.bernoullisample(prob, seed=42)
-            return img, label
+            return tf.cast((img), tf.float32) / 255.0, label
 
-        batch_size = 128
+        batch_size = 16
+        val_batch_size = 16
         data_dir = "/tmp/nsbi/data" if data_dir is None else data_dir
         os.makedirs(data_dir, exist_ok=True)
 
-        # https://stackoverflow.com/a/50453698
-        # https://stackoverflow.com/a/49916221
         (ds_train, ds_val, ds_test), ds_info = tfds.load(
-            "mnist",
-            split=["train", "test", "test"],
+            # "cifar10",
+            # split=["train", "test[0%:50%]", "test[50%:100%]"],
+            "svhn_cropped",
+            split=["extra", "test[0%:50%]", "test[50%:100%]"],
+            # "celeb_a",
+            # split=["train", "validation", "test"],
             shuffle_files=True,
             data_dir=data_dir,
             with_info=True,
             as_supervised=True,
         )
 
+        # https://stackoverflow.com/a/50453698
+        # https://stackoverflow.com/a/49916221
         ds_train = (
             ds_train.map(normalize, num_parallel_calls=4)
             .shuffle(len(ds_train))
@@ -76,11 +52,10 @@ class DataSets:
             .batch(batch_size)
             .prefetch(4)
         )
-
         ds_val = (
             ds_val.map(normalize, num_parallel_calls=4)
             .repeat()
-            .batch(len(ds_val))
+            .batch(val_batch_size)
             .prefetch(4)
         )
 
@@ -89,79 +64,72 @@ class DataSets:
         return iter(ds_train), iter(ds_val), ds_test
 
 
-class BasicBlock(tf.keras.Model):
-    def __init__(self, n_hidden, n_latent, **kwargs):
-        super(BasicBlock, self).__init__(**kwargs)
-
-        self.l1 = layers.Dense(n_hidden, activation=tf.nn.tanh)
-        self.l2 = layers.Dense(n_hidden, activation=tf.nn.tanh)
-        self.lmu = layers.Dense(n_latent, activation=None)
-        self.lstd = layers.Dense(n_latent, activation=tf.exp)
-
-    def call(self, input, **kwargs):
-        h1 = self.l1(input)
-        h2 = self.l2(h1)
-        q_mu = self.lmu(h2)
-        q_std = self.lstd(h2)
-
-        qz_given_input = tfd.Normal(q_mu, q_std + 1e-6)
-
-        return qz_given_input
-
-
-class Encoder(tf.keras.Model):
-    def __init__(self, n_hidden, n_latent, **kwargs):
-        super(Encoder, self).__init__(**kwargs)
-
-        self.encode_x_to_z = BasicBlock(n_hidden, n_latent)
-
-    def call(self, x, **kwargs):
-        x = tf.reshape(x, [x.shape[0], -1])
-        qzx = self.encode_x_to_z(x)
-        return qzx
-
-
 class Decoder(tf.keras.Model):
-    def __init__(self, n_hidden, **kwargs):
-        super(Decoder, self).__init__(**kwargs)
+    def __init__(self, n_latent):
+        super().__init__()
+        self.n_latent = n_latent
+        output_shape = (32, 32, 3)
 
-        self.decode_z_to_x = tf.keras.Sequential(
+        self.base_size = [output_shape[0] // 2 ** 3, output_shape[1] // 2 ** 3, 128]
+        self.fc = layers.Dense(np.prod(self.base_size), activation=tf.nn.relu)
+
+        self.deconvs = tf.keras.Sequential(
             [
-                layers.Dense(n_hidden, activation=tf.nn.tanh),
-                layers.Dense(n_hidden, activation=tf.nn.tanh),
-                layers.Dense(784, activation=None),
+                layers.Conv2DTranspose(
+                    128, kernel_size=4, strides=2, padding="same", activation=tf.nn.relu
+                ),
+                layers.Conv2DTranspose(
+                    64, kernel_size=4, strides=2, padding="same", activation=tf.nn.relu
+                ),
+                layers.Conv2DTranspose(
+                    32, kernel_size=4, strides=2, padding="same", activation=tf.nn.relu
+                ),
+                layers.Conv2D(3 * 2, kernel_size=3, padding="same", activation=None),
             ]
         )
 
     def call(self, z, **kwargs):
-        logits = self.decode_z_to_x(z)
-        logits = tf.reshape(logits, [*z.shape[:2], 28, 28, 1])
-        pxz = tfd.Bernoulli(logits=logits)
+        h = self.fc(z)
+        # ---- merge sample and batch dimensions and reshape from dense to conv, mirrored from encoder
+        h = tf.reshape(h, [-1, *self.base_size])
+        out = self.deconvs(h)
+        out = tf.reshape(out, [*z.shape[:-1], 32, 32, 3 * 2])
+        mu, logstd = tf.split(out, num_or_size_splits=2, axis=-1)
+        # pxz = DiscretizedLogistic(mu, tf.exp(tf.nn.tanh(logstd)))
+        pxz = DiscretizedLogistic(mu, logstd, low=0.0, high=1.0, levels=256)
+        # pxz = DiscretizedLogistic(mu, tf.nn.tanh(logstd), low=0., high=1., levels=256)
         return pxz
 
 
-class Model11(Model, tf.keras.Model):
+class Model33(Model, tf.keras.Model):
     def __init__(self):
-        super(Model11, self).__init__()
+        super(Model33, self).__init__()
 
-        # self.optimizer = tf.keras.optimizers.Adamax(1e-3)
         self.optimizer = tf.keras.optimizers.Adam(1e-3)
-        self.n_samples = 5
+        self.n_samples = 512
         self.global_step = GlobalStep()
         self.global_step.bind_to(
             self.update_learning_rate
         )  # add callback to update learning rate when gs.value is changed
         self.init_tensorboard()
 
-        self.loss_fn = iwae_loss
-
-        self.pz = tfd.Normal(0.0, 1.0)
+        self.pz = tfd.Normal(
+            tf.zeros(20, dtype=tf.float32), tf.ones(20, dtype=tf.float32)
+        )
         self.pz.axes = [-1]
 
-        self.encoder = Encoder(200, 100)
-        self.decoder = Decoder(200)
+        self.decoder = Decoder(20)
 
         self.ds = DataSets()
+
+    def loss_fn(self, x, z, pz, pxz):
+
+        lpxz = tf.reduce_sum(pxz.log_prob(x), axis=pxz.axes)
+
+        # logmeanexp over samples, mean over batch
+        lpx = tf.reduce_mean(logmeanexp(lpxz, axis=0), axis=-1)
+
+        return -lpx, {"iwae_elbo": lpx, "lpxz": lpxz}
 
     def update_learning_rate(self, value):
         if value in [2 ** i * 7000 for i in range(8)]:
@@ -171,15 +139,9 @@ class Model11(Model, tf.keras.Model):
             print(f"Changing learningrate from {old_lr:.2e} to {new_lr:.2e}")
 
     def call(self, x, n_samples=1, **kwargs):
-        qzx = self.encode(x)
-        z = qzx.sample(n_samples)
+        z = self.pz.sample([n_samples, x.shape[0]])
         pxz = self.decode(z)
-        return z, qzx, pxz
-
-    def encode(self, x):
-        qzx = self.encoder(x)
-        qzx.axes = [-1]  # specify axes to sum over in log_prob
-        return qzx
+        return z, pxz
 
     def decode(self, z):
         pxz = self.decoder(z)
@@ -189,8 +151,8 @@ class Model11(Model, tf.keras.Model):
     @tf.function
     def train_step(self, x):
         with tf.GradientTape() as tape:
-            z, qzx, pxz = self(x, n_samples=self.n_samples)
-            loss, metrics = self.loss_fn(x, z, self.pz, qzx, pxz)
+            z, pxz = self(x, n_samples=self.n_samples)
+            loss, metrics = self.loss_fn(x, z, self.pz, pxz)
 
         grads = tape.gradient(loss, self.trainable_weights)
         self.optimizer.apply_gradients(zip(grads, self.trainable_weights))
@@ -199,8 +161,8 @@ class Model11(Model, tf.keras.Model):
 
     @tf.function
     def val_step(self, x):
-        z, qzx, pxz = self(x, n_samples=self.n_samples)
-        loss, metrics = self.loss_fn(x, z, self.pz, qzx, pxz)
+        z, pxz = self(x, n_samples=self.n_samples)
+        loss, metrics = self.loss_fn(x, z, self.pz, pxz)
         return loss, metrics
 
     def train_batch(self):
@@ -219,8 +181,8 @@ class Model11(Model, tf.keras.Model):
         llh = np.nan * np.zeros(len(self.ds.ds_test))
 
         for i, (x, y) in enumerate(tqdm(self.ds.ds_test)):
-            z, qzx, pxz = self(x[None, :], n_samples=n_samples)
-            loss, metrics = self.loss_fn(x, z, self.pz, qzx, pxz)
+            z, pxz = self(x[None, :], n_samples=n_samples)
+            loss, metrics = self.loss_fn(x, z, self.pz, pxz)
             llh[i] = metrics["iwae_elbo"]
 
         return llh.mean(), llh
@@ -246,8 +208,9 @@ class Model11(Model, tf.keras.Model):
                 )
 
     def _plot_samples(self, x):
-        n, h, w, c = 8, 28, 28, 1
-        z, qzx, pxz = self(x[: n ** 2], n_samples=self.n_samples)
+        n, h, w, c = 8, 32, 32, 3
+        n = np.min([int(np.sqrt(x.shape[0])), n])
+        z, pxz = self(x[: n ** 2], n_samples=1)
         recs = pxz.mean()[0]  # [n_samples, batch, h, w, ch]
 
         canvas1 = np.random.rand(n * h, n * w, c)
@@ -259,7 +222,8 @@ class Model11(Model, tf.keras.Model):
 
         pz = tfd.Normal(tf.zeros_like(z), tf.ones_like(z))
         pxz = self.decode(pz.sample())
-        samples = tf.cast(pxz.sample(), tf.float32)[0]  # [n_samples, batch, h, w, ch]
+        # samples = tf.cast(pxz.sample(), tf.float32)[0]  # [n_samples, batch, h, w, ch]
+        samples = np.clip(pxz.mean()[0], 0.0, 1.0)  # [n_samples, batch, h, w, ch]
 
         canvas2 = np.random.rand(n * h, n * w, c)
         for i in range(n):
@@ -271,51 +235,44 @@ class Model11(Model, tf.keras.Model):
         return canvas2, canvas1
 
     def save(self, fp):
-        self.save_weights(f"{fp}_11")
+        self.save_weights(f"{fp}_33")
 
     def load(self, fp):
-        self.load_weights(f"{fp}_11")
+        self.load_weights(f"{fp}_33")
 
     def init_tensorboard(self, name: str = None) -> None:
         experiment = name or "tensorboard"
-        revision = os.environ.get("REVISION") or datetime.now().strftime(
-            "%Y%m%d-%H%M%S"
-        )
-        train_log_dir = f"/tmp/{experiment}/{revision}/train"
-        val_log_dir = f"/tmp/{experiment}/{revision}/val"
+        time = datetime.now().strftime("%Y%m%d-%H%M%S")
+        model = f"model33-{time}"
+        train_log_dir = f"/tmp/{experiment}/{model}/train"
+        val_log_dir = f"/tmp/{experiment}/{model}/val"
         self.train_summary_writer = tf.summary.create_file_writer(train_log_dir)
         self.val_summary_writer = tf.summary.create_file_writer(val_log_dir)
 
         # ---- directory for saving trained models
-        self.save_dir = f"./saved_models/{experiment}/{revision}"
+        self.save_dir = f"./saved_models/{experiment}/{model}"
         os.makedirs(self.save_dir, exist_ok=True)
 
 
 if __name__ == "__main__":
-    # PYTHONPATH=. CUDA_VISIBLE_DEVICES=1 nohup python -u models/model11.py > models/model11.log &
+    # PYTHONPATH=. CUDA_VISIBLE_DEVICES=1 nohup python -u models/model33.py > models/model33.log &
     from trainer import train
 
     # os.environ["CUDA_VISIBLE_DEVICES"] = ""
-    # tf.config.threading.set_intra_op_parallelism_threads(2)
-    # tf.config.threading.set_inter_op_parallelism_threads(2)
 
-    model = Model11()
+    model = Model33()
 
     # intialize model
     model.val_batch()
 
-    # approximation to the train mean
-    x, y = next(model.ds.train_loader)
-    x = x.numpy()
-    train_mean = np.mean(x.reshape(x.shape[0], -1), axis=0)
-    bias = -np.log(1.0 / np.clip(train_mean, 0.001, 0.999) - 1.0)
-
-    # set the output layer bias
-    model.decoder.trainable_weights[-1].assign(bias)
-
-    train(model, n_updates=1_400_000, eval_interval=1000)
+    train(model, n_updates=100_000, eval_interval=1000)
 
     model.load("best")
     mean_llh, llh = model.test(5000)
 
     print(mean_llh)
+
+    # x, y = next(model.ds.train_loader)
+    # model(x)
+    # model.load("best")
+    # qzx = model.encode(x)

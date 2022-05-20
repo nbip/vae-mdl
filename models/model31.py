@@ -14,32 +14,7 @@ from tqdm import tqdm
 import utils
 from models.loss import iwae_loss
 from models.model import Model
-
-
-class GlobalStep(object):
-    """
-    https://stackoverflow.com/a/6192298
-    https://codereview.stackexchange.com/q/253675
-    """
-
-    def __init__(self):
-        self._value = 0
-        self._observers = []
-
-    @property
-    def value(self):
-        return self._value
-
-    @value.setter
-    def value(self, value):
-        self._value = value
-        for callback in self._observers:
-            # print('announcing change')
-            callback(self._value)
-
-    def bind_to(self, callback):
-        # print('bound')
-        self._observers.append(callback)
+from utils import GlobalStep
 
 
 class DataSets:
@@ -140,9 +115,9 @@ class Decoder(tf.keras.Model):
         return pxz
 
 
-class Model11(Model, tf.keras.Model):
+class Model31(Model, tf.keras.Model):
     def __init__(self):
-        super(Model11, self).__init__()
+        super(Model31, self).__init__()
 
         # self.optimizer = tf.keras.optimizers.Adamax(1e-3)
         self.optimizer = tf.keras.optimizers.Adam(1e-3)
@@ -271,35 +246,32 @@ class Model11(Model, tf.keras.Model):
         return canvas2, canvas1
 
     def save(self, fp):
-        self.save_weights(f"{fp}_11")
+        self.save_weights(f"{fp}_31")
 
     def load(self, fp):
-        self.load_weights(f"{fp}_11")
+        self.load_weights(f"{fp}_31")
 
     def init_tensorboard(self, name: str = None) -> None:
         experiment = name or "tensorboard"
-        revision = os.environ.get("REVISION") or datetime.now().strftime(
-            "%Y%m%d-%H%M%S"
-        )
-        train_log_dir = f"/tmp/{experiment}/{revision}/train"
-        val_log_dir = f"/tmp/{experiment}/{revision}/val"
+        time = datetime.now().strftime("%Y%m%d-%H%M%S")
+        model = f"model31-{time}"
+        train_log_dir = f"/tmp/{experiment}/{model}/train"
+        val_log_dir = f"/tmp/{experiment}/{model}/val"
         self.train_summary_writer = tf.summary.create_file_writer(train_log_dir)
         self.val_summary_writer = tf.summary.create_file_writer(val_log_dir)
 
         # ---- directory for saving trained models
-        self.save_dir = f"./saved_models/{experiment}/{revision}"
+        self.save_dir = f"./saved_models/{experiment}/{model}"
         os.makedirs(self.save_dir, exist_ok=True)
 
 
 if __name__ == "__main__":
-    # PYTHONPATH=. CUDA_VISIBLE_DEVICES=1 nohup python -u models/model11.py > models/model11.log &
+    # PYTHONPATH=. CUDA_VISIBLE_DEVICES=1 nohup python -u models/model31.py > models/model31.log &
     from trainer import train
 
     # os.environ["CUDA_VISIBLE_DEVICES"] = ""
-    # tf.config.threading.set_intra_op_parallelism_threads(2)
-    # tf.config.threading.set_inter_op_parallelism_threads(2)
 
-    model = Model11()
+    model = Model31()
 
     # intialize model
     model.val_batch()
@@ -319,3 +291,24 @@ if __name__ == "__main__":
     mean_llh, llh = model.test(5000)
 
     print(mean_llh)
+
+    x, y = next(model.ds.train_loader)
+    model(x)
+    model.load("best")
+    qzx = model.encode(x)
+    z = qzx.sample(model.n_samples)
+    pxz = model.decode(z)
+
+    ones = tf.ones_like(z)
+
+    for i in [0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0]:
+        zn = i * ones + 0.01 * tf.random.normal(ones.shape)
+        pxz = model.decode(zn)
+        print(f" |z|: {i}, pxz.probs: {np.std(tf.nn.sigmoid(pxz.logits)):.4f}")
+        print(f" |z|: {i}, pxz.probs: {np.mean(pxz.logits):.4f}")
+
+    for i in [0.0, -0.5, -1.0, -1.5, -2.0, -2.5, -3.0]:
+        zn = i * ones + 0.01 * tf.random.normal(ones.shape)
+        pxz = model.decode(zn)
+        print(f" |z|: {i}, pxz.probs: {np.std(tf.nn.sigmoid(pxz.logits)):.4f}")
+        print(f" |z|: {i}, pxz.probs: {np.mean(pxz.logits):.4f}")

@@ -10,9 +10,9 @@ import tensorflow_datasets as tfds
 from tensorflow.keras import layers
 from tensorflow_probability import distributions as tfd
 
-from layers import GLU
 from models.loss import iwae_loss
 from models.model import Model
+from modules import GLU
 
 
 class Encoder(tf.keras.Model):

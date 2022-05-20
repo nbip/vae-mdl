@@ -12,8 +12,11 @@ from tensorflow_probability import distributions as tfd
 
 from models.loss import iwae_loss
 from models.model import Model
-from utils import (MixtureDiscretizedLogistic, PixelMixtureDiscretizedLogistic,
-                   logmeanexp)
+from utils import (
+    MixtureDiscretizedLogistic,
+    PixelMixtureDiscretizedLogistic,
+    logmeanexp,
+)
 
 
 class Encoder(tf.keras.Model):

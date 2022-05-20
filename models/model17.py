@@ -1,5 +1,5 @@
 """
-Reproduce IWAE results on statically binarized mnist
+As model15.py, but with conv architecture
 """
 import os
 from datetime import datetime
@@ -11,7 +11,6 @@ from tensorflow.keras import layers
 from tensorflow_probability import distributions as tfd
 from tqdm import tqdm
 
-import utils
 from models.loss import iwae_loss
 from models.model import Model
 
@@ -44,31 +43,30 @@ class GlobalStep(object):
 
 class DataSets:
     def __init__(self):
-
         self.train_loader, self.val_loader, self.ds_test = self.setup_data()
 
     @staticmethod
     def setup_data(data_dir=None):
         def normalize(img, label):
-            prob = tf.cast(img, tf.float32) / 255.0
-            img = utils.bernoullisample(prob, seed=42)
-            return img, label
+            return tf.cast((img), tf.float32) / 255.0, label
 
         batch_size = 128
+        val_batch_size = 500
         data_dir = "/tmp/nsbi/data" if data_dir is None else data_dir
         os.makedirs(data_dir, exist_ok=True)
 
-        # https://stackoverflow.com/a/50453698
-        # https://stackoverflow.com/a/49916221
         (ds_train, ds_val, ds_test), ds_info = tfds.load(
-            "mnist",
-            split=["train", "test", "test"],
+            # "cifar10",
+            "svhn_cropped",
+            split=["train", "test[0%:50%]", "test[50%:100%]"],
             shuffle_files=True,
             data_dir=data_dir,
             with_info=True,
             as_supervised=True,
         )
 
+        # https://stackoverflow.com/a/50453698
+        # https://stackoverflow.com/a/49916221
         ds_train = (
             ds_train.map(normalize, num_parallel_calls=4)
             .shuffle(len(ds_train))
@@ -76,11 +74,10 @@ class DataSets:
             .batch(batch_size)
             .prefetch(4)
         )
-
         ds_val = (
             ds_val.map(normalize, num_parallel_calls=4)
             .repeat()
-            .batch(len(ds_val))
+            .batch(val_batch_size)
             .prefetch(4)
         )
 
@@ -89,60 +86,76 @@ class DataSets:
         return iter(ds_train), iter(ds_val), ds_test
 
 
-class BasicBlock(tf.keras.Model):
-    def __init__(self, n_hidden, n_latent, **kwargs):
-        super(BasicBlock, self).__init__(**kwargs)
-
-        self.l1 = layers.Dense(n_hidden, activation=tf.nn.tanh)
-        self.l2 = layers.Dense(n_hidden, activation=tf.nn.tanh)
-        self.lmu = layers.Dense(n_latent, activation=None)
-        self.lstd = layers.Dense(n_latent, activation=tf.exp)
-
-    def call(self, input, **kwargs):
-        h1 = self.l1(input)
-        h2 = self.l2(h1)
-        q_mu = self.lmu(h2)
-        q_std = self.lstd(h2)
-
-        qz_given_input = tfd.Normal(q_mu, q_std + 1e-6)
-
-        return qz_given_input
-
-
 class Encoder(tf.keras.Model):
-    def __init__(self, n_hidden, n_latent, **kwargs):
-        super(Encoder, self).__init__(**kwargs)
+    def __init__(self, n_latent):
+        super().__init__()
+        self.n_latent = n_latent
 
-        self.encode_x_to_z = BasicBlock(n_hidden, n_latent)
+        self.convs = tf.keras.Sequential(
+            [
+                layers.Conv2D(
+                    32, strides=1, kernel_size=3, padding="same", activation=tf.nn.relu
+                ),
+                layers.Conv2D(
+                    64, strides=2, kernel_size=3, padding="same", activation=tf.nn.relu
+                ),
+                layers.Conv2D(
+                    128, strides=2, kernel_size=3, padding="same", activation=tf.nn.relu
+                ),
+                layers.Conv2D(
+                    256, strides=2, kernel_size=3, padding="same", activation=tf.nn.relu
+                ),
+            ]
+        )
+
+        conv_out_dim = 32 // 2 ** 3 * 32 // 2 ** 3 * 256
+        self.fc = layers.Dense(2 * n_latent)
 
     def call(self, x, **kwargs):
-        x = tf.reshape(x, [x.shape[0], -1])
-        qzx = self.encode_x_to_z(x)
-        return qzx
+        out = self.convs(x)
+        out = tf.reshape(out, [out.shape[0], -1])
+        mu, logstd = tf.split(self.fc(out), num_or_size_splits=2, axis=-1)
+        return tfd.Normal(mu, tf.nn.softplus(logstd))
 
 
 class Decoder(tf.keras.Model):
-    def __init__(self, n_hidden, **kwargs):
-        super(Decoder, self).__init__(**kwargs)
+    def __init__(self, n_latent):
+        super().__init__()
+        self.n_latent = n_latent
+        self.n_mix = 5
+        output_shape = (32, 32, 3)
 
-        self.decode_z_to_x = tf.keras.Sequential(
+        self.base_size = [output_shape[0] // 2 ** 3, output_shape[1] // 2 ** 3, 128]
+        self.fc = layers.Dense(np.prod(self.base_size), activation=tf.nn.relu)
+
+        self.deconvs = tf.keras.Sequential(
             [
-                layers.Dense(n_hidden, activation=tf.nn.tanh),
-                layers.Dense(n_hidden, activation=tf.nn.tanh),
-                layers.Dense(784, activation=None),
+                layers.Conv2DTranspose(
+                    128, kernel_size=4, strides=2, padding="same", activation=tf.nn.relu
+                ),
+                layers.Conv2DTranspose(
+                    64, kernel_size=4, strides=2, padding="same", activation=tf.nn.relu
+                ),
+                layers.Conv2DTranspose(
+                    32, kernel_size=4, strides=2, padding="same", activation=tf.nn.relu
+                ),
+                layers.Conv2D(3, kernel_size=3, padding="same", activation=None),
             ]
         )
 
     def call(self, z, **kwargs):
-        logits = self.decode_z_to_x(z)
-        logits = tf.reshape(logits, [*z.shape[:2], 28, 28, 1])
-        pxz = tfd.Bernoulli(logits=logits)
+        h = self.fc(z)
+        # ---- merge sample and batch dimensions and reshape from dense to conv, mirrored from encoder
+        h = tf.reshape(h, [-1, *self.base_size])
+        logits = self.deconvs(h)
+        logits = tf.reshape(logits, [*z.shape[:2], 32, 32, 3])
+        pxz = tfd.Bernoulli(logits=logits, dtype=tf.float32)
         return pxz
 
 
-class Model11(Model, tf.keras.Model):
+class Model17(Model, tf.keras.Model):
     def __init__(self):
-        super(Model11, self).__init__()
+        super(Model17, self).__init__()
 
         # self.optimizer = tf.keras.optimizers.Adamax(1e-3)
         self.optimizer = tf.keras.optimizers.Adam(1e-3)
@@ -158,8 +171,8 @@ class Model11(Model, tf.keras.Model):
         self.pz = tfd.Normal(0.0, 1.0)
         self.pz.axes = [-1]
 
-        self.encoder = Encoder(200, 100)
-        self.decoder = Decoder(200)
+        self.encoder = Encoder(16)
+        self.decoder = Decoder(16)
 
         self.ds = DataSets()
 
@@ -246,7 +259,7 @@ class Model11(Model, tf.keras.Model):
                 )
 
     def _plot_samples(self, x):
-        n, h, w, c = 8, 28, 28, 1
+        n, h, w, c = 8, 32, 32, 3
         z, qzx, pxz = self(x[: n ** 2], n_samples=self.n_samples)
         recs = pxz.mean()[0]  # [n_samples, batch, h, w, ch]
 
@@ -259,7 +272,8 @@ class Model11(Model, tf.keras.Model):
 
         pz = tfd.Normal(tf.zeros_like(z), tf.ones_like(z))
         pxz = self.decode(pz.sample())
-        samples = tf.cast(pxz.sample(), tf.float32)[0]  # [n_samples, batch, h, w, ch]
+        # samples = tf.cast(pxz.sample(), tf.float32)[0]  # [n_samples, batch, h, w, ch]
+        samples = tf.cast(pxz.mean(), tf.float32)[0]  # [n_samples, batch, h, w, ch]
 
         canvas2 = np.random.rand(n * h, n * w, c)
         for i in range(n):
@@ -271,10 +285,10 @@ class Model11(Model, tf.keras.Model):
         return canvas2, canvas1
 
     def save(self, fp):
-        self.save_weights(f"{fp}_11")
+        self.save_weights(f"{fp}_17")
 
     def load(self, fp):
-        self.load_weights(f"{fp}_11")
+        self.load_weights(f"{fp}_17")
 
     def init_tensorboard(self, name: str = None) -> None:
         experiment = name or "tensorboard"
@@ -292,26 +306,15 @@ class Model11(Model, tf.keras.Model):
 
 
 if __name__ == "__main__":
-    # PYTHONPATH=. CUDA_VISIBLE_DEVICES=1 nohup python -u models/model11.py > models/model11.log &
+    # PYTHONPATH=. CUDA_VISIBLE_DEVICES=1 nohup python -u models/model17.py > models/model17.log &
     from trainer import train
 
     # os.environ["CUDA_VISIBLE_DEVICES"] = ""
-    # tf.config.threading.set_intra_op_parallelism_threads(2)
-    # tf.config.threading.set_inter_op_parallelism_threads(2)
 
-    model = Model11()
+    model = Model17()
 
     # intialize model
     model.val_batch()
-
-    # approximation to the train mean
-    x, y = next(model.ds.train_loader)
-    x = x.numpy()
-    train_mean = np.mean(x.reshape(x.shape[0], -1), axis=0)
-    bias = -np.log(1.0 / np.clip(train_mean, 0.001, 0.999) - 1.0)
-
-    # set the output layer bias
-    model.decoder.trainable_weights[-1].assign(bias)
 
     train(model, n_updates=1_400_000, eval_interval=1000)
 

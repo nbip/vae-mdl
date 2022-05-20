@@ -1,5 +1,6 @@
 """
-Reproduce IWAE results on statically binarized mnist
+As model17.py, but with mse reconstruction loss.
+Learns quickly, but then cannot gain anymore.
 """
 import os
 from datetime import datetime
@@ -11,9 +12,38 @@ from tensorflow.keras import layers
 from tensorflow_probability import distributions as tfd
 from tqdm import tqdm
 
-import utils
 from models.loss import iwae_loss
 from models.model import Model
+from utils import logmeanexp
+
+
+def loss_fn(x, z, pz, qzx, rec_loss):
+    lpz = tf.reduce_sum(pz.log_prob(z), axis=pz.axes)
+
+    lqzx = tf.reduce_sum(qzx.log_prob(z), axis=qzx.axes)
+
+    # lpxz = tf.reduce_sum(pxz.log_prob(x), axis=pxz.axes)
+
+    log_w = rec_loss + (lpz - lqzx)
+
+    # logmeanexp over samples, average over batch
+    iwae_elbo = tf.reduce_mean(logmeanexp(log_w, axis=0), axis=-1)
+    bpd = -iwae_elbo / (tf.math.log(2.0) * 32.0 * 32.0 * 3.0)
+    # bits_pr_dim:
+    # https://github.com/rasmusbergpalm/vnca/blob/main/modules/vnca.py#L185
+    # https://github.com/Rayhane-mamah/Efficient-VDVAE/blob/main/efficient_vdvae_torch/model/losses.py#L146
+
+    log_snis = tf.math.log_softmax(log_w)
+    kl = -tf.reduce_mean(lpz - lqzx, axis=0)
+
+    return -iwae_elbo, {
+        "iwae_elbo": iwae_elbo,
+        "bpd": bpd,
+        "lpxz": rec_loss,  # tf.reduce_logsumexp(lpxz + log_snis, axis=0),
+        "lqzx": lqzx,
+        "lpz": lpz,
+        "kl": kl,
+    }
 
 
 class GlobalStep(object):
@@ -44,31 +74,30 @@ class GlobalStep(object):
 
 class DataSets:
     def __init__(self):
-
         self.train_loader, self.val_loader, self.ds_test = self.setup_data()
 
     @staticmethod
     def setup_data(data_dir=None):
         def normalize(img, label):
-            prob = tf.cast(img, tf.float32) / 255.0
-            img = utils.bernoullisample(prob, seed=42)
-            return img, label
+            return tf.cast((img), tf.float32) / 255.0, label
 
         batch_size = 128
+        val_batch_size = 500
         data_dir = "/tmp/nsbi/data" if data_dir is None else data_dir
         os.makedirs(data_dir, exist_ok=True)
 
-        # https://stackoverflow.com/a/50453698
-        # https://stackoverflow.com/a/49916221
         (ds_train, ds_val, ds_test), ds_info = tfds.load(
-            "mnist",
-            split=["train", "test", "test"],
+            # "cifar10",
+            "svhn_cropped",
+            split=["train", "test[0%:50%]", "test[50%:100%]"],
             shuffle_files=True,
             data_dir=data_dir,
             with_info=True,
             as_supervised=True,
         )
 
+        # https://stackoverflow.com/a/50453698
+        # https://stackoverflow.com/a/49916221
         ds_train = (
             ds_train.map(normalize, num_parallel_calls=4)
             .shuffle(len(ds_train))
@@ -76,11 +105,10 @@ class DataSets:
             .batch(batch_size)
             .prefetch(4)
         )
-
         ds_val = (
             ds_val.map(normalize, num_parallel_calls=4)
             .repeat()
-            .batch(len(ds_val))
+            .batch(val_batch_size)
             .prefetch(4)
         )
 
@@ -89,60 +117,75 @@ class DataSets:
         return iter(ds_train), iter(ds_val), ds_test
 
 
-class BasicBlock(tf.keras.Model):
-    def __init__(self, n_hidden, n_latent, **kwargs):
-        super(BasicBlock, self).__init__(**kwargs)
-
-        self.l1 = layers.Dense(n_hidden, activation=tf.nn.tanh)
-        self.l2 = layers.Dense(n_hidden, activation=tf.nn.tanh)
-        self.lmu = layers.Dense(n_latent, activation=None)
-        self.lstd = layers.Dense(n_latent, activation=tf.exp)
-
-    def call(self, input, **kwargs):
-        h1 = self.l1(input)
-        h2 = self.l2(h1)
-        q_mu = self.lmu(h2)
-        q_std = self.lstd(h2)
-
-        qz_given_input = tfd.Normal(q_mu, q_std + 1e-6)
-
-        return qz_given_input
-
-
 class Encoder(tf.keras.Model):
-    def __init__(self, n_hidden, n_latent, **kwargs):
-        super(Encoder, self).__init__(**kwargs)
+    def __init__(self, n_latent):
+        super().__init__()
+        self.n_latent = n_latent
 
-        self.encode_x_to_z = BasicBlock(n_hidden, n_latent)
+        self.convs = tf.keras.Sequential(
+            [
+                layers.Conv2D(
+                    32, strides=1, kernel_size=3, padding="same", activation=tf.nn.relu
+                ),
+                layers.Conv2D(
+                    64, strides=2, kernel_size=3, padding="same", activation=tf.nn.relu
+                ),
+                layers.Conv2D(
+                    128, strides=2, kernel_size=3, padding="same", activation=tf.nn.relu
+                ),
+                layers.Conv2D(
+                    256, strides=2, kernel_size=3, padding="same", activation=tf.nn.relu
+                ),
+            ]
+        )
+
+        conv_out_dim = 32 // 2 ** 3 * 32 // 2 ** 3 * 256
+        self.fc = layers.Dense(2 * n_latent)
 
     def call(self, x, **kwargs):
-        x = tf.reshape(x, [x.shape[0], -1])
-        qzx = self.encode_x_to_z(x)
-        return qzx
+        out = self.convs(x)
+        out = tf.reshape(out, [out.shape[0], -1])
+        mu, logstd = tf.split(self.fc(out), num_or_size_splits=2, axis=-1)
+        return tfd.Normal(mu, tf.nn.softplus(logstd))
 
 
 class Decoder(tf.keras.Model):
-    def __init__(self, n_hidden, **kwargs):
-        super(Decoder, self).__init__(**kwargs)
+    def __init__(self, n_latent):
+        super().__init__()
+        self.n_latent = n_latent
+        self.n_mix = 5
+        output_shape = (32, 32, 3)
 
-        self.decode_z_to_x = tf.keras.Sequential(
+        self.base_size = [output_shape[0] // 2 ** 3, output_shape[1] // 2 ** 3, 128]
+        self.fc = layers.Dense(np.prod(self.base_size), activation=tf.nn.relu)
+
+        self.deconvs = tf.keras.Sequential(
             [
-                layers.Dense(n_hidden, activation=tf.nn.tanh),
-                layers.Dense(n_hidden, activation=tf.nn.tanh),
-                layers.Dense(784, activation=None),
+                layers.Conv2DTranspose(
+                    128, kernel_size=4, strides=2, padding="same", activation=tf.nn.relu
+                ),
+                layers.Conv2DTranspose(
+                    64, kernel_size=4, strides=2, padding="same", activation=tf.nn.relu
+                ),
+                layers.Conv2DTranspose(
+                    32, kernel_size=4, strides=2, padding="same", activation=tf.nn.relu
+                ),
+                layers.Conv2D(3, kernel_size=3, padding="same", activation=None),
             ]
         )
 
     def call(self, z, **kwargs):
-        logits = self.decode_z_to_x(z)
-        logits = tf.reshape(logits, [*z.shape[:2], 28, 28, 1])
-        pxz = tfd.Bernoulli(logits=logits)
-        return pxz
+        h = self.fc(z)
+        # ---- merge sample and batch dimensions and reshape from dense to conv, mirrored from encoder
+        h = tf.reshape(h, [-1, *self.base_size])
+        mu = self.deconvs(h)
+        mu = tf.reshape(mu, [*z.shape[:-1], 32, 32, 3])
+        return mu
 
 
-class Model11(Model, tf.keras.Model):
+class Model19(Model, tf.keras.Model):
     def __init__(self):
-        super(Model11, self).__init__()
+        super(Model19, self).__init__()
 
         # self.optimizer = tf.keras.optimizers.Adamax(1e-3)
         self.optimizer = tf.keras.optimizers.Adam(1e-3)
@@ -153,13 +196,16 @@ class Model11(Model, tf.keras.Model):
         )  # add callback to update learning rate when gs.value is changed
         self.init_tensorboard()
 
-        self.loss_fn = iwae_loss
+        self.loss_fn = loss_fn
+        self.mse = tf.keras.losses.MeanSquaredError(
+            reduction=tf.keras.losses.Reduction.NONE
+        )
 
         self.pz = tfd.Normal(0.0, 1.0)
         self.pz.axes = [-1]
 
-        self.encoder = Encoder(200, 100)
-        self.decoder = Decoder(200)
+        self.encoder = Encoder(16)
+        self.decoder = Decoder(16)
 
         self.ds = DataSets()
 
@@ -173,8 +219,8 @@ class Model11(Model, tf.keras.Model):
     def call(self, x, n_samples=1, **kwargs):
         qzx = self.encode(x)
         z = qzx.sample(n_samples)
-        pxz = self.decode(z)
-        return z, qzx, pxz
+        mu = self.decode(z)
+        return z, qzx, mu
 
     def encode(self, x):
         qzx = self.encoder(x)
@@ -182,25 +228,26 @@ class Model11(Model, tf.keras.Model):
         return qzx
 
     def decode(self, z):
-        pxz = self.decoder(z)
-        pxz.axes = [-1, -2, -3]  # specify axes to sum over in log_prob
-        return pxz
+        mu = self.decoder(z)
+        return mu
 
-    @tf.function
+    # @tf.function
     def train_step(self, x):
         with tf.GradientTape() as tape:
-            z, qzx, pxz = self(x, n_samples=self.n_samples)
-            loss, metrics = self.loss_fn(x, z, self.pz, qzx, pxz)
+            z, qzx, mu = self(x, n_samples=self.n_samples)
+            rec_loss = -tf.reduce_sum(self.mse(x, mu), axis=[-1, -2])
+            loss, metrics = self.loss_fn(x, z, self.pz, qzx, rec_loss)
 
         grads = tape.gradient(loss, self.trainable_weights)
         self.optimizer.apply_gradients(zip(grads, self.trainable_weights))
 
         return loss, metrics
 
-    @tf.function
+    # @tf.function
     def val_step(self, x):
-        z, qzx, pxz = self(x, n_samples=self.n_samples)
-        loss, metrics = self.loss_fn(x, z, self.pz, qzx, pxz)
+        z, qzx, mu = self(x, n_samples=self.n_samples)
+        rec_loss = -tf.reduce_sum(self.mse(x, mu), axis=[-1, -2])
+        loss, metrics = self.loss_fn(x, z, self.pz, qzx, rec_loss)
         return loss, metrics
 
     def train_batch(self):
@@ -246,9 +293,9 @@ class Model11(Model, tf.keras.Model):
                 )
 
     def _plot_samples(self, x):
-        n, h, w, c = 8, 28, 28, 1
-        z, qzx, pxz = self(x[: n ** 2], n_samples=self.n_samples)
-        recs = pxz.mean()[0]  # [n_samples, batch, h, w, ch]
+        n, h, w, c = 8, 32, 32, 3
+        z, qzx, mu = self(x[: n ** 2], n_samples=self.n_samples)
+        recs = mu[0]  # [n_samples, batch, h, w, ch]
 
         canvas1 = np.random.rand(n * h, n * w, c)
         for i in range(n):
@@ -258,8 +305,9 @@ class Model11(Model, tf.keras.Model):
                 ]
 
         pz = tfd.Normal(tf.zeros_like(z), tf.ones_like(z))
-        pxz = self.decode(pz.sample())
-        samples = tf.cast(pxz.sample(), tf.float32)[0]  # [n_samples, batch, h, w, ch]
+        mu = self.decode(pz.sample())
+        # samples = tf.cast(pxz.sample(), tf.float32)[0]  # [n_samples, batch, h, w, ch]
+        samples = tf.cast(mu, tf.float32)[0]  # [n_samples, batch, h, w, ch]
 
         canvas2 = np.random.rand(n * h, n * w, c)
         for i in range(n):
@@ -271,10 +319,10 @@ class Model11(Model, tf.keras.Model):
         return canvas2, canvas1
 
     def save(self, fp):
-        self.save_weights(f"{fp}_11")
+        self.save_weights(f"{fp}_19")
 
     def load(self, fp):
-        self.load_weights(f"{fp}_11")
+        self.load_weights(f"{fp}_19")
 
     def init_tensorboard(self, name: str = None) -> None:
         experiment = name or "tensorboard"
@@ -292,26 +340,15 @@ class Model11(Model, tf.keras.Model):
 
 
 if __name__ == "__main__":
-    # PYTHONPATH=. CUDA_VISIBLE_DEVICES=1 nohup python -u models/model11.py > models/model11.log &
+    # PYTHONPATH=. CUDA_VISIBLE_DEVICES=1 nohup python -u models/model19.py > models/model19.log &
     from trainer import train
 
     # os.environ["CUDA_VISIBLE_DEVICES"] = ""
-    # tf.config.threading.set_intra_op_parallelism_threads(2)
-    # tf.config.threading.set_inter_op_parallelism_threads(2)
 
-    model = Model11()
+    model = Model19()
 
     # intialize model
     model.val_batch()
-
-    # approximation to the train mean
-    x, y = next(model.ds.train_loader)
-    x = x.numpy()
-    train_mean = np.mean(x.reshape(x.shape[0], -1), axis=0)
-    bias = -np.log(1.0 / np.clip(train_mean, 0.001, 0.999) - 1.0)
-
-    # set the output layer bias
-    model.decoder.trainable_weights[-1].assign(bias)
 
     train(model, n_updates=1_400_000, eval_interval=1000)
 
