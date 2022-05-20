@@ -15,7 +15,7 @@ class GLU(layers.Layer):
                     kernel_size=3,
                     strides=1,
                     padding="same",
-                    activation=tf.nn.relu,
+                    activation=activation,
                 ),
                 layers.Conv2D(
                     2 * filters,
