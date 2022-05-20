@@ -1,3 +1,5 @@
+import math
+
 import tensorflow as tf
 from tensorflow_probability import distributions as tfd
 
@@ -21,7 +23,7 @@ def axes(self, axes):
 tfd.Distribution.axes = axes
 
 
-def iwae_loss(x, z, pz, qzx, pxz):
+def iwae_loss(x, z, pz, qzx, pxz, beta=1.0):
 
     lpz = tf.reduce_sum(pz.log_prob(z), axis=pz.axes)
 
@@ -29,14 +31,16 @@ def iwae_loss(x, z, pz, qzx, pxz):
 
     lpxz = tf.reduce_sum(pxz.log_prob(x), axis=pxz.axes)
 
-    log_w = lpxz + (lpz - lqzx)
+    log_w = lpxz + beta * (lpz - lqzx)
 
     # logmeanexp over samples, average over batch
     iwae_elbo = tf.reduce_mean(logmeanexp(log_w, axis=0), axis=-1)
-    bpd = -iwae_elbo / (tf.math.log(2.0) * 32.0 * 32.0 * 3.0)
+
     # bits_pr_dim:
     # https://github.com/rasmusbergpalm/vnca/blob/main/modules/vnca.py#L185
     # https://github.com/Rayhane-mamah/Efficient-VDVAE/blob/main/efficient_vdvae_torch/model/losses.py#L146
+    n_dims = tf.cast(tf.math.reduce_prod(x.shape[1:]), tf.float32)
+    bpd = -iwae_elbo / (tf.math.log(2.0) * n_dims)
 
     log_snis = tf.math.log_softmax(log_w)
     kl = -tf.reduce_mean(lpz - lqzx, axis=0)
