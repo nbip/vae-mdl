@@ -21,7 +21,7 @@ class MixtureDiscretizedLogistic(tfd.Distribution):
         """
         Mixture of discretized logistic distributions.
 
-        Assumes parameters shape: [batch, h, w, n_mix * 10]
+        Assumes parameters shape: [?] + [batch, h, w, n_mix * 10]
 
         For each pixel there are n_mix * 10 parameters in total:
         - n_mix logits. These cover the whole pixel
@@ -51,7 +51,7 @@ class MixtureDiscretizedLogistic(tfd.Distribution):
 
         self.low, self.high = -1.0, 1.0
 
-        self._axes = [-1, -2, -3]
+        self._axes = [-1, -2, -3]  # axes to sum over in a loss
 
     def _log_prob(self, x):
         """
@@ -88,7 +88,7 @@ class MixtureDiscretizedLogistic(tfd.Distribution):
         # ---- [batch, h, w]
         lp = tf.reduce_logsumexp(weighted_log_probs, axis=-1)
 
-        # ---- extend last (channel) dimension to be similar to other loss functions
+        # ---- expand last (channel) dimension to be similar to other loss functions
         return tf.expand_dims(lp, axis=-1)
 
     def _split_params(self):
@@ -247,7 +247,7 @@ class MixtureDiscretizedLogistic(tfd.Distribution):
         )
 
         # ---- specific to this project: samples from [-1., 1.] to [0., 1.]
-        selected_samples = (selected_samples + 1.0) / 2.0
+        selected_samples = selected_samples * 0.5 + 0.5
 
         return selected_samples
 

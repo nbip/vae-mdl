@@ -1,5 +1,6 @@
 """
-Wrapper around the OpenAI pixelCNN implementation
+Wrapper around the OpenAI pixelCNN implementation,
+with functionality for leading sample dimensions, as in the IWAE
 
 https://github.com/openai/pixel-cnn/blob/master/pixel_cnn_pp/nn.py
 https://github.com/rasmusbergpalm/vnca/blob/main/modules/dml.py
@@ -12,7 +13,7 @@ from tensorflow_probability import distributions as tfd
 from tensorflow_probability.python.internal import reparameterization
 
 
-class MixtureDiscretizedLogisticOpenai(tfd.Distribution):
+class MixtureDiscretizedLogisticOpenaiIWAE(tfd.Distribution):
     """
     https://www.tensorflow.org/probability/api_docs/python/tfp/distributions/Distribution
     """
@@ -25,34 +26,77 @@ class MixtureDiscretizedLogisticOpenai(tfd.Distribution):
             allow_nan_stats=False,
         )
 
-        self.logits = logits  # [batch, h, w, n_mix * 10]
-        self.n_mix = logits.shape[-1] // 10
+        self.logits = logits  # [n_samples] + [batch, h, w, n_mix * 10]
+        self.shape = logits.shape
+        self.n_mix = self.shape[-1] // 10
 
     def _log_prob(self, x):
-        return discretized_mix_logistic_loss(x, self.logits, sum_all=False)
+        # ---- specific to this project: x from [0., 1.] to [-1., 1.]
+        x = x * 2.0 - 1.0
+
+        # ---- merge possible leading dimensions and batch dimensions
+        logits_reshaped = tf.reshape(self.logits, [-1, *self.shape[-3:]])
+        # Note that this reshape will manifest as
+        # [0 1 2
+        #  0 1 2
+        #  0 1 2
+        #  0 1 2]  ->
+        # [0 1 2 0 1 2 0 1 2 0 1 2]
+        # where height is samples and width is batch.
+        # So the in logits_reshaped, the batch index changes while the sample index is constant, until a new sample index
+
+        # ---- repeat x to match the logits
+        repeats = logits_reshaped.shape[0] // x.shape[0]
+        # Note that a repeat like this:
+        # tf.repeat(x, repeats=repeats, axis=0)
+        # will manifest as
+        # [0 1 2]  ->  [0 0 0 1 1 1 2 2 2]
+        # which does not match the logits_reshape. Instead
+        x_repeat = tf.repeat(x[None, :], repeats=repeats, axis=0)
+        x_reshaped = tf.reshape(x_repeat, [-1, *x.shape[-3:]])
+
+        # ---- get the logprob
+        # [n_samples * batch, h, w]
+        lp = discretized_mix_logistic_loss(x_reshaped, logits_reshaped, sum_all=False)
+
+        # ---- unmerge the sample and batch dimensions
+        # [n_samples, batch, h, w]
+        lp_unmerged = tf.reshape(lp, self.shape[:-1])
+
+        # ---- expand last (channel) dimension to be similar to other loss functions
+        return tf.expand_dims(lp_unmerged, axis=-1)
 
     def _sample_n(self, n, seed=None, **kwargs):
         # https://github.com/tensorflow/probability/blob/v0.16.0/tensorflow_probability/python/distributions/logistic.py#L160
 
+        # ---- merge possible leading dimensions and batch dimensions
+        # [n_samples * batch, h, w, n_mix * 10]
+        logits_reshaped = tf.reshape(self.logits, [-1, *self.shape[-3:]])
+
         # ---- expand logits to have [n] as the leading dimension
-        # [n, batch, h, w, n_mix * 10]
-        n_logits = tf.repeat(tf.expand_dims(self.logits, axis=0), repeats=n, axis=0)
+        # [n, batch * n_samples, h, w, n_mix * 10]
+        n_logits = tf.repeat(tf.expand_dims(logits_reshaped, axis=0), repeats=n, axis=0)
 
         # ---- merge the sample dimension into the batch dimension
-        # [n * batch, h, w, n_mix * 10]
+        # [n * batch * n_samples, h, w, n_mix * 10]
         n_logits_reshaped = tf.reshape(
-            n_logits, [self.logits.shape[0] * n, *self.logits.shape[1:]]
+            n_logits, [logits_reshaped.shape[0] * n, *self.logits.shape[-3:]]
         )
 
         # ---- get samples
-        # [n * batch, h, w, 3]
+        # [n * batch * n_samples, h, w, 3]
         samples = sample_from_discretized_mix_logistic(n_logits_reshaped, self.n_mix)
 
-        # ---- unmerge the sample and batch dimensions
-        # [n, batch, h, w, 3]
-        samples_unmerged = tf.reshape(samples, [n, *self.logits.shape[:-1], 3])
+        # ---- unmerge the sample and batch + n_samples dimensions
+        # [n, batch * n_samples, h, w, 3]
+        samples_unmerged = tf.reshape(samples, [n, *logits_reshaped.shape[:-1], 3])
 
-        return samples_unmerged
+        # ---- unmerge batch and n_samples dimensions
+        samples_unmerged2 = tf.reshape(
+            samples_unmerged, [n, *self.logits.shape[:-1], 3]
+        )
+
+        return samples_unmerged2 * 0.5 + 0.5
 
     def _mean(self, n=100, **kwargs):
         return tf.reduce_mean(self.sample(n), axis=0)
@@ -200,7 +244,7 @@ if __name__ == "__main__":
     os.environ["CUDA_VISIBLE_DEVICES"] = ""
 
     # ---- generate torch / tf data
-    b, c, h, w = 5, 3, 4, 4
+    s, b, h, w, c = 17, 5, 4, 4, 3
     n_mixtures = 5
     x = np.random.rand(b, h, w, c).astype(np.float32)
 
@@ -211,10 +255,10 @@ if __name__ == "__main__":
 
     x = tf.convert_to_tensor(x)
 
-    logits = np.random.randn(b, h, w, n_mixtures * 10).astype(np.float32)
+    logits = np.random.randn(s, b, h, w, n_mixtures * 10).astype(np.float32)
     logits = tf.convert_to_tensor(logits)
 
-    p = MixtureDiscretizedLogisticOpenai(logits)
+    p = MixtureDiscretizedLogisticOpenaiIWAE(logits)
 
     print(p.log_prob(2.0 * x - 1.0).shape)
     print(p.sample().shape)
