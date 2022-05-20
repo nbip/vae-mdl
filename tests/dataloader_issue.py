@@ -1,9 +1,13 @@
 """
-I had a problem using tensorflow datasets
+I had a problem using tensorflow datasets. I wnated to
 - define a data-loader as an attribute of a tf.keras.Model
 - use tf.random.uniform as part of preprocessing in .map()
 - save model weights using model.save_weights
-see minimal example below
+This caused a bunch of issues, see (not so) minimal example below
+
+https://www.tensorflow.org/tutorials/load_data/tfrecord:
+"The mapped function must operate in TensorFlow graph mode—it must operate on and return tf.Tensors. A non-tensor function, like serialize_example, can be wrapped with tf.py_function to make it compatible.
+Using tf.py_function requires to specify the shape and type information that is otherwise unavailable:"
 
 dataloader resources:
 https://stackoverflow.com/a/50453698
@@ -352,67 +356,67 @@ class Model11(Model, tf.keras.Model):
     #
     #     return iter(ds_train), iter(ds_test), ds_test
 
-    @staticmethod
-    def setup_data(data_dir=None):
-
-        # tf.random.uniform cannot be used because it is not stateless and
-        # for some reason model.save_weights cannot handle that
-        # tf.random.uniform_stateless introduces some weird subtle bug that I cannot figure out,
-        # especially because the issue does not occur when it is not in pipeline.
-        # numpy seems to introduce some new unexpected behavior.
-        # Okay I think the reason numpy is trange is related to this: https://stackoverflow.com/q/69108284
-        # The Dataset is executed once, which means that the same random number is used every time... ish
-        def normalize(img, label):
-            return tf.cast(img, tf.float32) / 255.0, label
-
-        def bernoullisample(img, label):
-            return (
-                tf.cast(tf.math.greater(img, tf.random.uniform(img.shape)), tf.float32),
-                label,
-            )
-
-        batch_size = 128
-        data_dir = "/tmp/nsbi/data" if data_dir is None else data_dir
-        os.makedirs(data_dir, exist_ok=True)
-
-        (ds_train, ds_val, ds_test), ds_info = tfds.load(
-            "mnist",
-            split=["train", "test", "test"],
-            shuffle_files=True,
-            data_dir=data_dir,
-            with_info=True,
-            as_supervised=True,
-        )
-
-        # ---- shuffling, infinite yield, preprocessing
-        # https://stackoverflow.com/a/50453698
-        # https://stackoverflow.com/a/49916221
-        # https://www.tensorflow.org/guide/data#randomly_shuffling_input_data
-        # https://www.tensorflow.org/datasets/overview
-        # https://www.tensorflow.org/datasets/splits
-        # manual dataset https://www.tensorflow.org/datasets/add_dataset
-        # https://www.reddit.com/r/MachineLearning/comments/65me2d/d_proper_crop_for_celeba/
-        # celeba hint: https://github.com/Rayhane-mamah/Efficient-VDVAE/blob/main/efficient_vdvae_torch/train.py#L121
-        # download celeba: https://github.com/AntixK/PyTorch-VAE
-        ds_train = (
-            ds_train.map(normalize, num_parallel_calls=4)
-            .map(bernoullisample)
-            .shuffle(len(ds_train))
-            .repeat()
-            .batch(batch_size)
-            .prefetch(4)
-        )
-
-        ds_val = (
-            ds_val.map(normalize, num_parallel_calls=4)
-            .repeat()
-            .batch(10000)
-            .prefetch(4)
-        )
-
-        ds_test = ds_test.map(normalize).prefetch(4)
-
-        return iter(ds_train), iter(ds_val), ds_test
+    # @staticmethod
+    # def setup_data(data_dir=None):
+    #
+    #     # tf.random.uniform cannot be used because it is not stateless and
+    #     # for some reason model.save_weights cannot handle that
+    #     # tf.random.uniform_stateless introduces some weird subtle bug that I cannot figure out,
+    #     # especially because the issue does not occur when it is not in pipeline.
+    #     # numpy seems to introduce some new unexpected behavior.
+    #     # Okay I think the reason numpy is trange is related to this: https://stackoverflow.com/q/69108284
+    #     # The Dataset is executed once, which means that the same random number is used every time... ish
+    #     def normalize(img, label):
+    #         return tf.cast(img, tf.float32) / 255.0, label
+    #
+    #     def bernoullisample(img, label):
+    #         return (
+    #             tf.cast(tf.math.greater(img, tf.random.uniform(img.shape)), tf.float32),
+    #             label,
+    #         )
+    #
+    #     batch_size = 128
+    #     data_dir = "/tmp/nsbi/data" if data_dir is None else data_dir
+    #     os.makedirs(data_dir, exist_ok=True)
+    #
+    #     (ds_train, ds_val, ds_test), ds_info = tfds.load(
+    #         "mnist",
+    #         split=["train", "test", "test"],
+    #         shuffle_files=True,
+    #         data_dir=data_dir,
+    #         with_info=True,
+    #         as_supervised=True,
+    #     )
+    #
+    #     # ---- shuffling, infinite yield, preprocessing
+    #     # https://stackoverflow.com/a/50453698
+    #     # https://stackoverflow.com/a/49916221
+    #     # https://www.tensorflow.org/guide/data#randomly_shuffling_input_data
+    #     # https://www.tensorflow.org/datasets/overview
+    #     # https://www.tensorflow.org/datasets/splits
+    #     # manual dataset https://www.tensorflow.org/datasets/add_dataset
+    #     # https://www.reddit.com/r/MachineLearning/comments/65me2d/d_proper_crop_for_celeba/
+    #     # celeba hint: https://github.com/Rayhane-mamah/Efficient-VDVAE/blob/main/efficient_vdvae_torch/train.py#L121
+    #     # download celeba: https://github.com/AntixK/PyTorch-VAE
+    #     ds_train = (
+    #         ds_train.map(normalize, num_parallel_calls=4)
+    #         .map(bernoullisample)
+    #         .shuffle(len(ds_train))
+    #         .repeat()
+    #         .batch(batch_size)
+    #         .prefetch(4)
+    #     )
+    #
+    #     ds_val = (
+    #         ds_val.map(normalize, num_parallel_calls=4)
+    #         .repeat()
+    #         .batch(10000)
+    #         .prefetch(4)
+    #     )
+    #
+    #     ds_test = ds_test.map(normalize).prefetch(4)
+    #
+    #     return iter(ds_train), iter(ds_val), ds_test
 
 
 if __name__ == "__main__":
