@@ -1,176 +1,153 @@
 """
-https://github.com/rasmusbergpalm/vnca/blob/dmg-double-celeba/vae-nca.py
-https://github.com/rasmusbergpalm/vnca/tree/dmg_celebA_baseline
-https://github.com/rasmusbergpalm/vnca/blob/dmg_celebA_baseline/modules/vae.py#L88
-
-TODO: run VAE ELBO and beta-VAE elbo https://github.com/rasmusbergpalm/vnca/blob/dmg-double-celeba/vae-nca.py#L282
-TODO: use the torch celeba loader, adapt to tensorflow
-TODO: change module load in .bashrc to match the tf3 environment
-
-# TODO: make the most minimal change to dml: instead of x use loc, so
-# loc_g = loc_g + coeff * clip(loc_r, -1, 1)
-# I think that is the first incremental change I can make
-
-# TODO: use architecture from supMIWAE (which worked decently on SVHN)
-
-Things that mitigated nans:
-- softplus instead of exp
-- kernel initializer, look to https://arxiv.org/pdf/2203.13751.pdf appendix C.1
+Reproduce IWAE results on statically binarized mnist
+A few differences to the original IWAE:
+- larger batch_size
+- different learning_rate scheme
 """
-
 import os
 from datetime import datetime
 
+import numpy as np
 import tensorflow as tf
 import tensorflow_datasets as tfds
 from tensorflow.keras import layers
 from tensorflow_probability import distributions as tfd
+from tqdm import tqdm
 
+import utils
 from models.loss import iwae_loss
 from models.model import Model
-from utils import (MixtureDiscretizedLogistic, PixelMixtureDiscretizedLogistic,
-                   logmeanexp)
+from utils import GlobalStep
 
 
-class SampleMerge(layers.Layer):
-    def __init__(self, *args: layers.Layer):
-        super().__init__()
-        self.seq = tf.keras.Sequential([*args])
+class DataSets:
+    def __init__(self):
 
-    def call(self, x, **kwargs):
-        in_shape = x.shape  # [samples, batch, h, w, c] or [batch, h, w, c]
+        self.train_loader, self.val_loader, self.ds_test = self.setup_data()
 
-        # --- merge sample and batch dim
-        x = tf.reshape(x, [-1, *in_shape[-3:]])
+    @staticmethod
+    def setup_data(data_dir=None):
+        def normalize(img, label):
+            prob = tf.cast(img, tf.float32) / 255.0
+            img = utils.bernoullisample(prob, seed=42)
+            return img, label
 
-        out = self.seq(x)
+        batch_size = 128
+        data_dir = "/tmp/nsbi/data" if data_dir is None else data_dir
+        os.makedirs(data_dir, exist_ok=True)
 
-        # ---- unmerge sample and batch dim
-        out_shape = out.shape
-        out = tf.reshape(out, [*in_shape[:-3], *out_shape[-3:]])
-
-        return out
-
-
-class BernoulliWrapper(tfd.Bernoulli):
-    def __init__(self, *args, **kwargs):
-        super(BernoulliWrapper, self).__init__(*args, **kwargs)
-
-    def mean(self, n=100, **kwargs):
-        return super(BernoulliWrapper, self).mean(**kwargs)
-
-    def sample(self, **kwargs):
-        return tf.nn.sigmoid(self.logits)
-
-
-def Conv2D(*args, **kwargs):
-    return conv2DWrap(*args, transpose=False, **kwargs)
-
-
-def Conv2DTranspose(*args, **kwargs):
-    return conv2DWrap(*args, transpose=True, **kwargs)
-
-
-class conv2DWrap(tf.keras.layers.Layer):
-    """
-    Wrapper around convolutional operations to allow for multiple leading dimensions.
-
-    Example:
-    in [samples, batch, h, w, c] -> intermediate [samples * batch, ...] -> out [samples, batch, h2, w2, c2]
-    """
-
-    def __init__(self, *args, transpose=False, **kwargs):
-        super(conv2DWrap, self).__init__()
-
-        self.conv = (
-            tf.keras.layers.Conv2DTranspose(*args, **kwargs)
-            if transpose
-            else tf.keras.layers.Conv2D(*args, **kwargs)
+        # https://stackoverflow.com/a/50453698
+        # https://stackoverflow.com/a/49916221
+        (ds_train, ds_val, ds_test), ds_info = tfds.load(
+            "mnist",
+            split=["train", "test", "test"],
+            shuffle_files=True,
+            data_dir=data_dir,
+            with_info=True,
+            as_supervised=True,
         )
 
+        ds_train = (
+            ds_train.map(normalize, num_parallel_calls=4)
+            .shuffle(len(ds_train))
+            .repeat()
+            .batch(batch_size)
+            .prefetch(4)
+        )
+
+        ds_val = (
+            ds_val.map(normalize, num_parallel_calls=4)
+            .repeat()
+            .batch(len(ds_val))
+            .prefetch(4)
+        )
+
+        ds_test = ds_test.map(normalize).prefetch(4)
+
+        return iter(ds_train), iter(ds_val), ds_test
+
+
+class BasicBlock(tf.keras.Model):
+    def __init__(self, n_hidden, n_latent, **kwargs):
+        super(BasicBlock, self).__init__(**kwargs)
+
+        self.l1 = layers.Dense(n_hidden, activation=tf.nn.tanh)
+        self.l2 = layers.Dense(n_hidden, activation=tf.nn.tanh)
+        self.lmu = layers.Dense(n_latent, activation=None)
+        self.lstd = layers.Dense(n_latent, activation=tf.exp)
+
+    def call(self, input, **kwargs):
+        h1 = self.l1(input)
+        h2 = self.l2(h1)
+        q_mu = self.lmu(h2)
+        q_std = self.lstd(h2)
+
+        qz_given_input = tfd.Normal(q_mu, q_std + 1e-6)
+
+        return qz_given_input
+
+
+class Encoder(tf.keras.Model):
+    def __init__(self, n_hidden, n_latent, **kwargs):
+        super(Encoder, self).__init__(**kwargs)
+
+        self.encode_x_to_z = BasicBlock(n_hidden, n_latent)
+
     def call(self, x, **kwargs):
-        in_shape = x.shape  # [samples, batch, h, w, c] or [batch, h, w, c]
+        x = tf.reshape(x, [x.shape[0], -1])
+        qzx = self.encode_x_to_z(x)
+        return qzx
 
-        # --- merge sample and batch dim
-        x = tf.reshape(x, [-1, *in_shape[-3:]])
 
-        # ---- do the conv
-        out = self.conv(x)
+class Decoder(tf.keras.Model):
+    def __init__(self, n_hidden, **kwargs):
+        super(Decoder, self).__init__(**kwargs)
 
-        # ---- unmerge sample and batch dim
-        out_shape = out.shape
-        out = tf.reshape(out, [*in_shape[:-3], *out_shape[-3:]])
+        self.decode_z_to_x = tf.keras.Sequential(
+            [
+                layers.Dense(n_hidden, activation=tf.nn.tanh),
+                layers.Dense(n_hidden, activation=tf.nn.tanh),
+                layers.Dense(784, activation=None),
+            ]
+        )
 
-        return out
+    def call(self, z, **kwargs):
+        logits = self.decode_z_to_x(z)
+        logits = tf.reshape(logits, [*z.shape[:2], 28, 28, 1])
+        pxz = tfd.Bernoulli(logits=logits)
+        return pxz
 
 
 class Model01(Model, tf.keras.Model):
     def __init__(self):
         super(Model01, self).__init__()
 
-        self.optimizer = tf.keras.optimizers.Adamax(1e-3)
-        self.n_samples = 10
-        self.global_step = 0
+        self.optimizer = tf.keras.optimizers.Adam(1e-3)
+        self.n_samples = 5
+        self.global_step = GlobalStep()
+        self.global_step.bind_to(
+            self.update_learning_rate
+        )  # add callback to update learning rate when gs.value is changed
         self.init_tensorboard()
 
         self.loss_fn = iwae_loss
 
-        self.train_loader, self.val_loader, self.ds_test = self.setup_data()
-
         self.pz = tfd.Normal(0.0, 1.0)
-        self.pz.axes = [-1, -2, -3]
+        self.pz.axes = [-1]
 
-        # TODO: encoder/decoder: https://github.com/rasmusbergpalm/vnca/blob/dmg_celebA_baseline/baseline_celebA.py#L25
-        # TODO: https://github.com/nbip/VAE-natural-images/blob/main/models/hvae.py
-        # https://github.com/AntixK/PyTorch-VAE/blob/master/models/iwae.py
-        self.encoder = tf.keras.Sequential(
-            [
-                Conv2D(
-                    32, kernel_size=5, strides=2, padding="same", activation=tf.nn.elu
-                ),
-                Conv2D(
-                    64, kernel_size=5, strides=2, padding="same", activation=tf.nn.elu
-                ),
-                Conv2D(
-                    128, kernel_size=5, strides=2, padding="same", activation=tf.nn.elu
-                ),
-                Conv2D(
-                    2 * 256,
-                    kernel_size=5,
-                    strides=2,
-                    padding="same",
-                    activation=None,
-                    kernel_initializer=tf.keras.initializers.RandomNormal(
-                        mean=0.0, stddev=0.01, seed=None
-                    ),
-                ),
-            ]
-        )
+        self.encoder = Encoder(200, 100)
+        self.decoder = Decoder(200)
 
-        self.decoder = tf.keras.Sequential(
-            [
-                Conv2DTranspose(
-                    128, kernel_size=5, strides=2, padding="same", activation=tf.nn.elu
-                ),
-                Conv2DTranspose(
-                    64, kernel_size=5, strides=2, padding="same", activation=tf.nn.elu
-                ),
-                Conv2DTranspose(
-                    32, kernel_size=5, strides=2, padding="same", activation=tf.nn.elu
-                ),
-                Conv2DTranspose(
-                    100,
-                    kernel_size=5,
-                    strides=2,
-                    padding="same",
-                    activation=None,
-                    kernel_initializer="zeros",
-                ),
-            ]
-        )
+        self.ds = DataSets()
 
-    # TODO: debug, why can't I use tf.function here?
-    # Looks like it has to return tensors
+    def update_learning_rate(self, value):
+        """Learning rate scheme"""
+        if value in [2 ** i * 7000 for i in range(8)]:
+            old_lr = self.optimizer.learning_rate.numpy()
+            new_lr = 1e-3 * 10 ** (-value / (2 ** 7 * 7000))
+            self.optimizer.learning_rate.assign(new_lr)
+            print(f"Changing learningrate from {old_lr:.2e} to {new_lr:.2e}")
+
     def call(self, x, n_samples=1, **kwargs):
         qzx = self.encode(x)
         z = qzx.sample(n_samples)
@@ -178,17 +155,14 @@ class Model01(Model, tf.keras.Model):
         return z, qzx, pxz
 
     def encode(self, x):
-        q = self.encoder(x)
-        loc, logscale = tf.split(q, num_or_size_splits=2, axis=-1)
-        qzx = tfd.Normal(loc, tf.nn.softplus(logscale) + 1e-6)
-        qzx.axes = [-1, -2, -3]  # specify axes to sum over in log_prob
+        qzx = self.encoder(x)
+        qzx.axes = [-1]  # specify axes to sum over in log_prob
         return qzx
 
     def decode(self, z):
-        logits = self.decoder(z)
-        p = MixtureDiscretizedLogistic(logits)
-        p.axes = [-1, -2, -3]  # specify axes to sum over in log_prob
-        return p
+        pxz = self.decoder(z)
+        pxz.axes = [-1, -2, -3]  # specify axes to sum over in log_prob
+        return pxz
 
     @tf.function
     def train_step(self, x):
@@ -198,6 +172,7 @@ class Model01(Model, tf.keras.Model):
 
         grads = tape.gradient(loss, self.trainable_weights)
         self.optimizer.apply_gradients(zip(grads, self.trainable_weights))
+
         return loss, metrics
 
     @tf.function
@@ -207,230 +182,149 @@ class Model01(Model, tf.keras.Model):
         return loss, metrics
 
     def train_batch(self):
-        x, y = next(self.train_loader)
+        x, y = next(self.ds.train_loader)
         loss, metrics = self.train_step(x)
-        self.global_step += 1
-
+        self.global_step.value += 1
         return loss, metrics
 
     def val_batch(self):
-        x, y = next(self.val_loader)
+        x, y = next(self.ds.val_loader)
         loss, metrics = self.val_step(x)
         self.report(x, metrics)
         return loss, metrics
 
-    def test(self):
-        # TODO: test: https://github.com/rasmusbergpalm/vnca/blob/dmg_celebA_baseline/modules/vae.py#L124
-        pass
+    def test(self, n_samples):
+        llh = np.nan * np.zeros(len(self.ds.ds_test))
+
+        for i, (x, y) in enumerate(tqdm(self.ds.ds_test)):
+            z, qzx, pxz = self(x[None, :], n_samples=n_samples)
+            loss, metrics = self.loss_fn(x, z, self.pz, qzx, pxz)
+            llh[i] = metrics["iwae_elbo"]
+
+        return llh.mean(), llh
 
     def report(self, x, metrics):
-        samples, recs = self._plot_samples(x)
+        samples, recs, imgs = self._plot_samples(x)
 
         with self.val_summary_writer.as_default():
-            tf.summary.image("Evaluation/img", x[0][None, :], step=self.global_step)
-            tf.summary.image("Evaluation/img_rec", recs[0, :], step=self.global_step)
             tf.summary.image(
-                "Evaluation/img_samp", samples[0, :], step=self.global_step
+                "Evaluation/images", imgs[None, :], step=self.global_step.value
+            )
+            tf.summary.image(
+                "Evaluation/reconstructions", recs[None, :], step=self.global_step.value
+            )
+            tf.summary.image(
+                "Evaluation/generative-samples",
+                samples[None, :],
+                step=self.global_step.value,
             )
             for key, value in metrics.items():
                 tf.summary.scalar(
-                    f"Evalutation/{key}", value.numpy().mean(), step=self.global_step
+                    f"Evalutation/{key}",
+                    value.numpy().mean(),
+                    step=self.global_step.value,
                 )
 
     def _plot_samples(self, x):
-        z, qzx, pxz = self(x[0][None, :], n_samples=self.n_samples)
-        recs = pxz.mean()  # [n_samples, batch, h, w, ch]
-        # recs = pxz.mean(n=100)  # [n_samples, batch, h, w, ch]
+        n, h, w, c = 8, 28, 28, 1
 
+        # reconstructions
+        z, qzx, pxz = self(x[: n ** 2], n_samples=self.n_samples)
+        recs = pxz.mean()[0]  # [n_samples, batch, h, w, ch]
+
+        # samples
         pz = tfd.Normal(tf.zeros_like(z), tf.ones_like(z))
         pxz = self.decode(pz.sample())
-        samples = pxz.sample()  # [n_samples, batch, h, w, ch]
+        samples = tf.cast(pxz.sample(), tf.float32)[0]  # [n_samples, batch, h, w, ch]
 
-        return samples, recs
+        img_canvas = np.empty([n * h, n * w, c])
+        for i in range(n):
+            for j in range(n):
+                img_canvas[i * h : (i + 1) * h, j * w : (j + 1) * w, :] = x[
+                    i * n + j, :, :, :
+                ]
 
-    def setup_data(self, data_dir=None):
-        def normalize(img, label):
-            return tf.cast((img), tf.float32) / 255.0, label
+        rec_canvas = np.empty([n * h, n * w, c])
+        for i in range(n):
+            for j in range(n):
+                rec_canvas[i * h : (i + 1) * h, j * w : (j + 1) * w, :] = recs[
+                    i * n + j, :, :, :
+                ]
 
-        batch_size = 128
-        data_dir = "/tmp/nsbi/data" if data_dir is None else data_dir
-        os.makedirs(data_dir, exist_ok=True)
+        sample_canvas = np.empty([n * h, n * w, c])
+        for i in range(n):
+            for j in range(n):
+                sample_canvas[i * h : (i + 1) * h, j * w : (j + 1) * w, :] = samples[
+                    i * n + j, :, :, :
+                ]
 
-        (ds_train, ds_val, ds_test), ds_info = tfds.load(
-            # "cifar10",
-            "svhn_cropped",
-            split=["train", "test[0%:50%]", "test[50%:100%]"],
-            shuffle_files=True,
-            data_dir=data_dir,
-            with_info=True,
-            as_supervised=True,
-        )
-
-        # ---- shuffling, infinite yield, preprocessing
-        # https://stackoverflow.com/a/50453698
-        # https://stackoverflow.com/a/49916221
-        # https://www.tensorflow.org/guide/data#randomly_shuffling_input_data
-        # https://www.tensorflow.org/datasets/overview
-        # https://www.tensorflow.org/datasets/splits
-        # manual dataset https://www.tensorflow.org/datasets/add_dataset
-        # https://www.reddit.com/r/MachineLearning/comments/65me2d/d_proper_crop_for_celeba/
-        # celeba hint: https://github.com/Rayhane-mamah/Efficient-VDVAE/blob/main/efficient_vdvae_torch/train.py#L121
-        # download celeba: https://github.com/AntixK/PyTorch-VAE
-        ds_train = (
-            ds_train.map(normalize, num_parallel_calls=4)
-            .shuffle(len(ds_train))
-            .repeat()
-            .batch(batch_size)
-            .prefetch(4)
-        )
-        ds_val = (
-            ds_val.map(normalize, num_parallel_calls=4)
-            .repeat()
-            .batch(batch_size)
-            .prefetch(4)
-        )
-
-        ds_test = ds_test.map(normalize).prefetch(4)
-
-        return iter(ds_train), iter(ds_val), ds_test
+        return sample_canvas, rec_canvas, img_canvas
 
     def save(self, fp):
-        self.save_weights(fp)
+        self.save_weights(f"{self.save_dir}/{fp}")
 
     def load(self, fp):
-        self.load_weights(fp)
+        self.load_weights(f"{self.save_dir}/{fp}")
 
     def init_tensorboard(self, name: str = None) -> None:
         experiment = name or "tensorboard"
-        revision = os.environ.get("REVISION") or datetime.now().strftime(
-            "%Y%m%d-%H%M%S"
-        )
-        train_log_dir = f"/tmp/{experiment}/{revision}/train"
-        val_log_dir = f"/tmp/{experiment}/{revision}/val"
+        time = datetime.now().strftime("%Y%m%d-%H%M%S")
+        model = f"model01"
+        train_log_dir = f"/tmp/{experiment}/{model}-{time}/train"
+        val_log_dir = f"/tmp/{experiment}/{model}-{time}/val"
         self.train_summary_writer = tf.summary.create_file_writer(train_log_dir)
         self.val_summary_writer = tf.summary.create_file_writer(val_log_dir)
 
         # ---- directory for saving trained models
-        self.save_dir = f"./saved_models/{experiment}/{revision}"
+        self.save_dir = f"./saved_models/{model}"
         os.makedirs(self.save_dir, exist_ok=True)
 
 
 if __name__ == "__main__":
+    # PYTHONPATH=. CUDA_VISIBLE_DEVICES=1 nohup python -u models/model01.py > models/model01.log &
+    from trainer import train
 
-    os.environ["CUDA_VISIBLE_DEVICES"] = ""
-    # import matplotlib;
-    # matplotlib.use("Agg")  # needed when running from commandline
-    import matplotlib.pyplot as plt
-    import numpy as np
-
-    b, h, w, c = 5, 32, 32, 3
-    x = np.random.rand(b, h, w, c).astype(np.float32)
-
-    # bin the data, to resemble images
-    bin = True
-    if bin:
-        x = np.floor(x * 256.0) / 255.0
+    # os.environ["CUDA_VISIBLE_DEVICES"] = ""
 
     model = Model01()
 
-    x, y = next(model.train_loader)
-
-    fig, ax = plt.subplots()
-    ax.imshow(x[0])
-    plt.show()
-    plt.savefig("img")
-    plt.close()
-
-    # ---- test model subparts
-    qzx = model.encode(x)
-    z = qzx.sample(model.n_samples)
-    pxz = model.decode(z)
-    z, qzx, pxz = model(x, model.n_samples)
-
-    # ---- test save / load
-    # model.save() does not work because methods are returning tfd distribution objects
-    # instead use save_weights
-    # model.save_weights('saved_weights')
-    # model.load_weights('saved_weights')
-    # model.load_weights("best")
-    model.load_weights("latest")
-
-    # ---- test model reconstructions
-    x = x[0][None, :]
-    qzx = model.encode(x)
-    z = qzx.sample(model.n_samples)
-    pxz = model.decode(z)
-    z, qzx, pxz = model(x, model.n_samples)
-    x_samples = pxz.sample(100)
-    mean = tf.reduce_mean(x_samples, axis=0)
-
-    fig, ax = plt.subplots()
-    ax.imshow(mean[0, 0, :])
-    plt.show()
-    plt.close()
-    fig, ax = plt.subplots()
-    ax.imshow(x_samples[0, 0, 0, :])
-    plt.show()
-    plt.close()
-
-    # ---- generate from the prior
-    samples, recs = model._plot_samples(x)
-    fig, ax = plt.subplots()
-    ax.imshow(samples[2, 0, :])
-    plt.show()
-    plt.close()
-
-    # ---- test reporting
-    model.report(x, {"loss": tf.ones(2)})
-
-    model.train_step(x)
-
-    model.train_batch()
+    # intialize model
     model.val_batch()
 
-    # for i in range(100_000):
-    #     loss, metrics = model.train_batch()
-    #     if i % 100 == 0:
-    #         print(i, loss)
+    # approximation to the train mean
+    x, y = next(model.ds.train_loader)
+    x = x.numpy()
+    train_mean = np.mean(x.reshape(x.shape[0], -1), axis=0)
+    bias = -np.log(1.0 / np.clip(train_mean, 0.001, 0.999) - 1.0)
 
-    # ---- test model reconstructions
-    x = x[0][None, :]
-    qzx = model.encode(x)
-    z = qzx.sample(model.n_samples)
-    pxz = model.decode(z)
-    z, qzx, pxz = model(x, model.n_samples)
-    x_samples = pxz.sample(100)
-    mean = tf.reduce_mean(x_samples, axis=0)
+    # set the output layer bias
+    model.decoder.trainable_weights[-1].assign(bias)
 
-    fig, ax = plt.subplots()
-    ax.imshow(mean[0, 0, :])
-    plt.show()
-    plt.savefig("img_rec")
-    plt.close()
+    train(model, n_updates=1_400_000, eval_interval=1000)
 
-    # conv = conv2DWrap(32, kernel_size=5, strides=2, padding="same", activation=tf.nn.elu)
+    model.load("best")
+    mean_llh, llh = model.test(5000)
 
-    # x = np.random.rand(10, b, h, w, c).astype(np.float32)
-    # out = conv(x)
-    # print(out.shape)
+    print(mean_llh)
 
-    # conv_t = conv2DWrap(3, transpose=True, kernel_size=5, strides=2, padding="same", activation=tf.nn.elu)
+    import matplotlib
 
-    # reversed = conv_t(out)
-    # print(reversed.shape)
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
 
-    # # ---- shuffle before repeat?
-    # # shuffle then repeat makes sure every element is seen before a new epoch
-    # ds = tf.data.Dataset.range(6)
-    #
-    # # ds = ds.repeat()
-    # # ds = ds.shuffle(6)
-    # ds = ds.shuffle(100000)
-    # ds = ds.repeat()
-    # ds = ds.batch(2)
-    #
-    # iterator = iter(ds)
-    # for i in range(20):
-    #     if i % (10 // 2) == 0:
-    #         print("------------")
-    #     print("{:02d}:".format(i), next(iterator))
+    samples, recs, imgs = model._plot_samples(x)
+
+    plt.clf()
+    plt.imshow(samples, cmap="gray_r")
+    plt.axis("off")
+    plt.savefig(f"./assets/model01_samples")
+
+    plt.clf()
+    plt.imshow(recs, cmap="gray_r")
+    plt.axis("off")
+    plt.savefig(f"./assets/model01_recs")
+
+    plt.clf()
+    plt.imshow(imgs, cmap="gray_r")
+    plt.axis("off")
+    plt.savefig(f"./assets/model01_imgs")
