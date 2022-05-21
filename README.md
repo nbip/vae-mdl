@@ -87,6 +87,18 @@ So we have some kind of misspecification of our generative model. We have a few 
 * The beta-VAE has a reweighting of the KL, which helps produce better samples when beta is tuned correctly. This is equivalent to lower bounding the variance in the observation model so we won't look at this approach.
 
 
+<table>
+  <tr>
+    <td> <img src="assets/model02_samples.png" width="320" height="240"  alt=""/></td>
+
+    <td><img src="assets/model02_samples.png" width="320" height="240"  alt=""/></td>
+   </tr> 
+   <tr>
+      <td><img src="assets/model02_samples.png" width="320" height="240"  alt=""/></td>
+
+      <td><img src="assets/model02_samples.png" width="320" height="240"  alt=""/></td>
+  </tr>
+</table>
 
 # TODO:
 - implement a merge/unmerge layer for handling importance samples  
