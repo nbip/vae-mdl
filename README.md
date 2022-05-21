@@ -51,6 +51,18 @@ First we verify our setup by reproducing the original IWAE results in `model01.p
 | --- | --- |
 | 5 | -85.02 |
 
+
+<table>
+    <tr>
+    <td>Model samples</td><td>Images</td><td>Reconstructions</td>
+    </tr>
+    <tr>
+        <td> <img src="assets/model02_samples.png" width="320" height="240"  alt=""/> </td>
+        <td> <img src="assets/model01_imgs.png" width="320" height="240" /> </td>
+        <td> <img src="assets/model01_recs.png" width="320" height="240" /> |</td>
+    </tr>
+</table>
+
 | Models samples | Images | Reconstructions |
 | --- | --- | --- |
 | <img src="assets/model01_samples.png" width="320" height="240"  alt=""/> | <img src="assets/model01_imgs.png" width="320" height="240" /> | <img src="assets/model01_recs.png" width="320" height="240" /> |
