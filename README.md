@@ -51,7 +51,7 @@ First we verify our setup by reproducing the original IWAE results in `model01.p
 | --- | --- |
 | 5 | -85.02 |
 
-| Model samples | Images | Reconstructions |
+| Images | Reconstructions | Samples |
 | --- | --- | --- |
 | ![][1] | ![][2] | ![][3] |
 
@@ -66,7 +66,7 @@ The variance is lower bounded at $exp(-1)$ by putting a tanh activation on the l
 Models that use this Gaussian with lower bounded variance loss or the MSE loss with good results can be seen here: [AntixK](https://github.com/AntixK/PyTorch-VAE).  
 Samples from the model look fine, but if the lower bounding on the variance is removed, they become horrible - try it out.
 
-| Model samples | Images | Reconstructions |
+| Images | Reconstructions | Samples |
 | --- | --- | --- |
 | ![][4] | ![][5] | ![][6] |
 
@@ -76,7 +76,7 @@ There is a lot the MoDL loss, so in `model03.py` let's try out a plain discretiz
 The logistic distribution is somewhat similar to a gaussian, where the continuous distribution is being binned into a discrete pmf.
 The same phenomenon is seen here: with a lowerbounding of the variance samples from the model look reasonable, while removing the lower bounding destroys the samples.
 
-| Model samples | Images | Reconstructions |
+| Images | Reconstructions | Samples |
 | --- | --- | --- |
 | ![][7] | ![][8] | ![][9] |
 
@@ -93,12 +93,12 @@ So we have some kind of misspecification of our generative model. We have a few 
 - keep track of stochastic layers with Dicts? or something else? look at Rust collections and how they are indexed
 
 
-[1]: assets/model01_samples.png
-[2]: assets/model01_imgs.png
-[3]: assets/model01_recs.png
-[4]: assets/model02_samples.png
-[5]: assets/model02_imgs.png
-[6]: assets/model02_recs.png
-[7]: assets/model03_samples.png
-[8]: assets/model03_imgs.png
-[9]: assets/model03_recs.png
+[1]: assets/model01_imgs.png
+[2]: assets/model01_recs.png
+[3]: assets/model01_samples.png
+[4]: assets/model02_imgs.png
+[5]: assets/model02_recs.png
+[6]: assets/model02_samples.png
+[7]: assets/model03_imgs.png
+[8]: assets/model03_recs.png
+[9]: assets/model03_samples.png
