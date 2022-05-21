@@ -57,9 +57,9 @@ First we verify our setup by reproducing the original IWAE results in `model01.p
     <td>Model samples</td><td>Images</td><td>Reconstructions</td>
     </tr>
     <tr>
-        <td> <img src="assets/model02_samples.png" width="320" height="240"  alt=""/> </td>
+        <td> <img src="assets/model01_samples.png" style="max-height:100%; max-width:100%" alt=""/> </td>
         <td> <img src="assets/model01_imgs.png" width="320" height="240" /> </td>
-        <td> <img src="assets/model01_recs.png" width="320" height="240" /> |</td>
+        <td> <img src="assets/model01_recs.png" width="320" height="240" /> </td>
     </tr>
 </table>
 
