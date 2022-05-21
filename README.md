@@ -53,7 +53,7 @@ First we verify our setup by reproducing the original IWAE results in `model01.p
 
 | Models samples | Images | Reconstructions |
 | --- | --- | --- |
-<img src="assets/model01_samples.png" width="320" height="240"  alt=""/> <img src="assets/model01_imgs.png" width="320" height="240" /> <img src="assets/model01_recs.png" width="320" height="240" />
+| <img src="assets/model01_samples.png" width="320" height="240"  alt=""/> | <img src="assets/model01_imgs.png" width="320" height="240" /> | <img src="assets/model01_recs.png" width="320" height="240" /> |
 
 It is very common to see improper losses used in place of $\log p(x|z)$. 
 For example the binary cross entropy used for non-binary data or MSE loss, which implies a Gaussian loss with fixed variance = 1. 
@@ -68,7 +68,7 @@ Samples from the model look fine, but if the lower bounding on the variance is r
 
 | Models samples | Images | Reconstructions |
 | --- | --- | --- |
-<img src="assets/model02_samples.png" width="320" height="240"  alt=""/> <img src="assets/model02_imgs.png" width="320" height="240" /> <img src="assets/model02_recs.png" width="320" height="240" />
+| <img src="assets/model02_samples.png" width="320" height="240"  alt=""/> | <img src="assets/model02_imgs.png" width="320" height="240" /> | <img src="assets/model02_recs.png" width="320" height="240" /> |
 
 A Gaussian observtaion model for pixel values may not be appropriate in itself. The mixture of discretized logistics is basically what everybody is using now. 
 There is a lot the MoDL loss, so in `model03.py` let's try out a plain discretized logistic distribution instead. 
@@ -77,7 +77,7 @@ The same phenomenon is seen here: with a lowerbounding of the variance samples f
 
 | Models samples | Images | Reconstructions |
 | --- | --- | --- |
-<img src="assets/model03_samples.png" width="320" height="240"  alt=""/> <img src="assets/model03_imgs.png" width="320" height="240" /> <img src="assets/model03_recs.png" width="320" height="240" />
+| <img src="assets/model03_samples.png" width="320" height="240"  alt=""/> | <img src="assets/model03_imgs.png" width="320" height="240" /> | <img src="assets/model03_recs.png" width="320" height="240" />| 
 
 So we have some kind of misspecification of our generative model. We have a few options for mitigating this  
 
