@@ -13,7 +13,7 @@ from tensorflow_probability import distributions as tfd
 from tqdm import tqdm
 
 from models.model import Model
-from utils import MixtureDiscretizedLogistic, GlobalStep, logmeanexp, setup_data
+from utils import GlobalStep, MixtureDiscretizedLogistic, logmeanexp, setup_data
 
 
 class DistributionTuple(NamedTuple):
@@ -158,7 +158,9 @@ class Decoder(tf.keras.Model):
                 layers.Conv2DTranspose(
                     32, kernel_size=4, strides=2, padding="same", activation=tf.nn.gelu
                 ),
-                layers.Conv2D(self.n_mix * 10, kernel_size=3, padding="same", activation=None),
+                layers.Conv2D(
+                    self.n_mix * 10, kernel_size=3, padding="same", activation=None
+                ),
             ]
         )
 
