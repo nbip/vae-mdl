@@ -58,8 +58,8 @@ First we verify our setup by reproducing the original IWAE results in `model01.p
     </tr>
     <tr>
         <td> <img src="assets/model01_samples.png" style="max-height:100%; max-width:100%" alt=""/> </td>
-        <td> <img src="assets/model01_imgs.png" width="320" height="240" /> </td>
-        <td> <img src="assets/model01_recs.png" width="320" height="240" /> </td>
+        <td> <img src="assets/model01_imgs.png" style="max-height:100%; max-width:100%" /> </td>
+        <td> <img src="assets/model01_recs.png" style="max-height:100%; max-width:100%" /> </td>
     </tr>
 </table>
 
