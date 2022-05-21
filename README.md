@@ -84,12 +84,19 @@ The same phenomenon is seen here: with a lowerbounding of the variance samples f
 | --- | --- | --- |
 | ![][7] | ![][8] | ![][9] |
 
-So we have some kind of misspecification of our generative model. We have a few options for mitigating this  
+So there is some kind of misspecification of the generative model. We have a few options for mitigating this  
 
 * The convolutional archtectures have been simple so far, maybe a more complex architecture helps
 * The MoDL loss as typically used has an autoregression over the RGB channels, maybe this helps
 * The current setup only has one stochastic layer for the latent variable $z$, while current approaches have multiple stochastic layers. Maybe this is what balances the observation model loss vs the KL losses
 * The beta-VAE has a reweighting of the KL, which helps produce better samples when beta is tuned correctly. This is equivalent to lower bounding the variance in the observation model so we won't look at this approach.
+
+### Expand conv architecture
+We expand the conv architecture a bit in ``model04.py`. The conclusion is the same, without lower bounding the variance the samples from the generative model are terrible.
+
+| Images | Reconstructions | Samples |
+| --- | --- | --- |
+| ![][10] | ![][11] | ![][12] |
 
 
 # TODO:
@@ -106,6 +113,9 @@ So we have some kind of misspecification of our generative model. We have a few 
 [7]: assets/model03_imgs.png
 [8]: assets/model03_recs.png
 [9]: assets/model03_samples.png
+[10]: assets/model04_imgs.png
+[11]: assets/model04_recs.png
+[12]: assets/model04_samples.png
 
 
 [AntixK]: https://github.com/AntixK/PyTorch-VAE
