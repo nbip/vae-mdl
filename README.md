@@ -53,9 +53,7 @@ First we verify our setup by reproducing the original IWAE results in `model01.p
 
 | Models samples | Images | Reconstructions |
 | --- | --- | --- |
-<img src="assets/model01_samples.png" width="320" height="240"  alt=""/>
-<img src="assets/model01_imgs.png" width="320" height="240" /> 
-<img src="assets/model01_recs.png" width="320" height="240" />
+<img src="assets/model01_samples.png" width="320" height="240"  alt=""/> <img src="assets/model01_imgs.png" width="320" height="240" /> <img src="assets/model01_recs.png" width="320" height="240" />
 
 It is very common to see improper losses used in place of $\log p(x|z)$. 
 For example the binary cross entropy used for non-binary data or MSE loss, which implies a Gaussian loss with fixed variance = 1. 
@@ -70,16 +68,25 @@ Samples from the model look fine, but if the lower bounding on the variance is r
 
 | Models samples | Images | Reconstructions |
 | --- | --- | --- |
-<img src="assets/model02_samples.png" width="320" height="240"  alt=""/>
-<img src="assets/model02_imgs.png" width="320" height="240" /> 
-<img src="assets/model02_recs.png" width="320" height="240" />
+<img src="assets/model02_samples.png" width="320" height="240"  alt=""/> <img src="assets/model02_imgs.png" width="320" height="240" /> <img src="assets/model02_recs.png" width="320" height="240" />
 
 A Gaussian observtaion model for pixel values may not be appropriate in itself. The mixture of discretized logistics is basically what everybody is using now. 
 There is a lot the MoDL loss, so in `model03.py` let's try out a plain discretized logistic distribution instead. 
 The logistic distribution is somewhat similar to a gaussian, where the continuous distribution is being binned into a discrete pmf.
-The same phenomenon is seen here: with a lowerbounding of the variance samples from the model look reasonable, while removing the lower bounding destroys the samples.  
+The same phenomenon is seen here: with a lowerbounding of the variance samples from the model look reasonable, while removing the lower bounding destroys the samples.
 
-The convolutional archtectures have been simple so far
+| Models samples | Images | Reconstructions |
+| --- | --- | --- |
+<img src="assets/model03_samples.png" width="320" height="240"  alt=""/> <img src="assets/model03_imgs.png" width="320" height="240" /> <img src="assets/model03_recs.png" width="320" height="240" />
+
+So we have some kind of misspecification of our generative model. We have a few options for mitigating this  
+
+* The convolutional archtectures have been simple so far, maybe a more complex architecture helps
+* The MoDL loss as typically used has an autoregression over the RGB channels, maybe this helps
+* The current setup only has one stochastic layer for the latent variable $z$, while current approaches have multiple stochastic layers. Maybe this is what balances the observation model loss vs the KL losses
+* The beta-VAE has a reweighting of the KL, which helps produce better samples when beta is tuned correctly. This is equivalent to lower bounding the variance in the observation model so we won't look at this approach.
+
+
 
 # TODO:
 - implement a merge/unmerge layer for handling importance samples  
