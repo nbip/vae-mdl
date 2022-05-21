@@ -62,7 +62,7 @@ For example
 * MSE loss, which implies a Gaussian loss with fixed variance = 1 
 
 These approaches can generate qualitatively good samples from relatively simple models, if you just take the mean from $p(x|z)$ and don't sample from it.
-An example of MSE loss with good results can be found here: [AntixK](AntixK).  
+An example of MSE loss with good results can be found here: [AntixK][AntixK].  
 In the case of the binary cross entropy, sampling would mean all pixel values are either 0 or 1. In the case of MSE loss (Gaussian with variance 1), the sampling variance overwhelms the mean function.  
 
 This is illustrated with a Gaussian observation model $p(x|z)$ in `model02.py`. 
