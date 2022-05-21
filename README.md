@@ -55,24 +55,28 @@ First we verify our setup by reproducing the original IWAE results in `model01.p
 | --- | --- | --- |
 | ![][1] | ![][2] | ![][3] |
 
-It is very common to see improper losses used in place of $\log p(x|z)$. 
-For example the binary cross entropy used for non-binary data or MSE loss, which implies a Gaussian loss with fixed variance = 1. 
-These approaches generate qualitatively good samples from relatively simple models, if you just take the mean from $p(x|z)$ and don't sample from it.
-In the case of the binary cross entropy, sampling would mean all pixel values either 0 or 1. In the case of MSE loss (Gaussian with variance 1), the noise overwhelms the mean function.
-I have a feeling that these methods are easy to fit because they act like pseudo-flow models, where all the sample variation is in the prior. Or like GANs (which are not easy to fit though).
+It is very common to see improper observations models used in place of $p(x|z)$. 
+For example   
 
-We illustrate this with a Gaussian observation model $p(x|z)$ in `model02.py`. 
-The variance is lower bounded at $exp(-1)$ by putting a tanh activation on the log variance.
-Models that use this Gaussian with lower bounded variance loss or the MSE loss with good results can be seen here: [AntixK](https://github.com/AntixK/PyTorch-VAE).  
-Samples from the model look fine, but if the lower bounding on the variance is removed, they become horrible - try it out.
+* the binary cross entropy used for non-binary data 
+* MSE loss, which implies a Gaussian loss with fixed variance = 1 
+
+These approaches can generate qualitatively good samples from relatively simple models, if you just take the mean from $p(x|z)$ and don't sample from it.
+An example of MSE loss with good results can be found here: [AntixK](AntixK).  
+In the case of the binary cross entropy, sampling would mean all pixel values are either 0 or 1. In the case of MSE loss (Gaussian with variance 1), the sampling variance overwhelms the mean function.  
+
+This is illustrated with a Gaussian observation model $p(x|z)$ in `model02.py`. 
+The variance is soft lower bounded at $exp(-1)$ by putting a tanh activation on the log variance. 
+Samples from the model look fine, but if the lower bounding on the variance is removed, they become terrible - try it out.
 
 | Images | Reconstructions | Samples |
 | --- | --- | --- |
 | ![][4] | ![][5] | ![][6] |
 
 
-A Gaussian observtaion model for pixel values may not be appropriate in itself. The mixture of discretized logistics is basically what everybody is using now. 
-There is a lot the MoDL loss, so in `model03.py` let's try out a plain discretized logistic distribution instead. 
+A Gaussian observtaion model for pixel values may not be appropriate in itself. 
+The mixture of discretized logistics is basically what everybody is using in VAEs
+There is a lot the MoDL loss, so in `model03.py` a plain discretized logistic distribution is used instead. 
 The logistic distribution is somewhat similar to a gaussian, where the continuous distribution is being binned into a discrete pmf.
 The same phenomenon is seen here: with a lowerbounding of the variance samples from the model look reasonable, while removing the lower bounding destroys the samples.
 
@@ -102,3 +106,6 @@ So we have some kind of misspecification of our generative model. We have a few 
 [7]: assets/model03_imgs.png
 [8]: assets/model03_recs.png
 [9]: assets/model03_samples.png
+
+
+[AntixK]: https://github.com/AntixK/PyTorch-VAE
