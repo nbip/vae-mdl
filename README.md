@@ -51,19 +51,7 @@ First we verify our setup by reproducing the original IWAE results in `model01.p
 | --- | --- |
 | 5 | -85.02 |
 
-
-<table>
-    <tr>
-    <td>Model samples</td><td>Images</td><td>Reconstructions</td>
-    </tr>
-    <tr>
-        <td> <img src="assets/model01_samples.png" width="100" alt=""/> </td>
-        <td> <img src="assets/model01_imgs.png" width="100" alt=""/> </td>
-        <td> <img src="assets/model01_recs.png" width="100" alt=""/> </td>
-    </tr>
-</table>
-
-| Models samples | Images | Reconstructions |
+| Model samples | Images | Reconstructions |
 | --- | --- | --- |
 | ![][1] | ![][2] | ![][3] |
 
@@ -78,18 +66,19 @@ The variance is lower bounded at $exp(-1)$ by putting a tanh activation on the l
 Models that use this Gaussian with lower bounded variance loss or the MSE loss with good results can be seen here: [AntixK](https://github.com/AntixK/PyTorch-VAE).  
 Samples from the model look fine, but if the lower bounding on the variance is removed, they become horrible - try it out.
 
-| Models samples | Images | Reconstructions |
+| Model samples | Images | Reconstructions |
 | --- | --- | --- |
-| <img src="assets/model02_samples.png" width="320" height="240"  alt=""/> | <img src="assets/model02_imgs.png" width="320" height="240" /> | <img src="assets/model02_recs.png" width="320" height="240" /> |
+| ![][4] | ![][5] | ![][6] |
+
 
 A Gaussian observtaion model for pixel values may not be appropriate in itself. The mixture of discretized logistics is basically what everybody is using now. 
 There is a lot the MoDL loss, so in `model03.py` let's try out a plain discretized logistic distribution instead. 
 The logistic distribution is somewhat similar to a gaussian, where the continuous distribution is being binned into a discrete pmf.
 The same phenomenon is seen here: with a lowerbounding of the variance samples from the model look reasonable, while removing the lower bounding destroys the samples.
 
-| Models samples | Images | Reconstructions |
+| Model samples | Images | Reconstructions |
 | --- | --- | --- |
-| <img src="assets/model03_samples.png" width="320" height="240"  alt=""/> | <img src="assets/model03_imgs.png" width="320" height="240" /> | <img src="assets/model03_recs.png" width="320" height="240" />| 
+| ![][7] | ![][8] | ![][9] |
 
 So we have some kind of misspecification of our generative model. We have a few options for mitigating this  
 
@@ -99,22 +88,17 @@ So we have some kind of misspecification of our generative model. We have a few 
 * The beta-VAE has a reweighting of the KL, which helps produce better samples when beta is tuned correctly. This is equivalent to lower bounding the variance in the observation model so we won't look at this approach.
 
 
-<table>
-  <tr>
-    <td> <img src="assets/model02_samples.png" width="320" height="240"  alt=""/></td>
-    <td><img src="assets/model02_samples.png" width="320" height="240"  alt=""/></td>
-   </tr> 
-   <tr>
-      <td><img src="assets/model02_samples.png" width="320" height="240"  alt=""/></td>
-      <td><img src="assets/model02_samples.png" width="320" height="240"  alt=""/></td>
-  </tr>
-</table>
-
 # TODO:
 - implement a merge/unmerge layer for handling importance samples  
 - keep track of stochastic layers with Dicts? or something else? look at Rust collections and how they are indexed
 
 
-[1]: assets/model02_samples.png
-[2]: assets/model02_imgs.png
-[3]: assets/model02_recs.png
+[1]: assets/model01_samples.png
+[2]: assets/model01_imgs.png
+[3]: assets/model01_recs.png
+[4]: assets/model02_samples.png
+[5]: assets/model02_imgs.png
+[6]: assets/model02_recs.png
+[7]: assets/model03_samples.png
+[8]: assets/model03_imgs.png
+[9]: assets/model03_recs.png
