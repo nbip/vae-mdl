@@ -90,12 +90,10 @@ So we have some kind of misspecification of our generative model. We have a few 
 <table>
   <tr>
     <td> <img src="assets/model02_samples.png" width="320" height="240"  alt=""/></td>
-
     <td><img src="assets/model02_samples.png" width="320" height="240"  alt=""/></td>
    </tr> 
    <tr>
       <td><img src="assets/model02_samples.png" width="320" height="240"  alt=""/></td>
-
       <td><img src="assets/model02_samples.png" width="320" height="240"  alt=""/></td>
   </tr>
 </table>
