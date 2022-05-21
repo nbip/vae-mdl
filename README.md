@@ -65,7 +65,7 @@ First we verify our setup by reproducing the original IWAE results in `model01.p
 
 | Models samples | Images | Reconstructions |
 | --- | --- | --- |
-| <img src="assets/model01_samples.png" width="320" height="240"  alt=""/> | <img src="assets/model01_imgs.png" width="320" height="240" /> | <img src="assets/model01_recs.png" width="320" height="240" /> |
+| ![][1] | ![][2] | ![][3] |
 
 It is very common to see improper losses used in place of $\log p(x|z)$. 
 For example the binary cross entropy used for non-binary data or MSE loss, which implies a Gaussian loss with fixed variance = 1. 
@@ -113,3 +113,8 @@ So we have some kind of misspecification of our generative model. We have a few 
 # TODO:
 - implement a merge/unmerge layer for handling importance samples  
 - keep track of stochastic layers with Dicts? or something else? look at Rust collections and how they are indexed
+
+
+[1]: assets/model02_samples.png
+[2]: assets/model02_imgs.png
+[3]: assets/model02_recs.png
