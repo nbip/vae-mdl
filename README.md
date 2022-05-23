@@ -21,31 +21,34 @@ In the loss I was reducing over last three axes, but when I changed the latent v
 ## Resources:
 - [VDVAE](https://github.com/openai/vdvae), [simple VDVAE](https://github.com/vvvm23/vdvae)
 - [Efficient VDVAE](https://github.com/Rayhane-mamah/Efficient-VDVAE)
+- [VDVAE-SR](https://github.com/dman14/VDVAE-SR)
 - [LVAE havtorn](https://github.com/JakobHavtorn/vae)  [HVAE](https://github.com/JakobHavtorn/hvae-oodd), [LVAE dittadi](https://github.com/addtt/ladder-vae-pytorch)
 - [OODD](https://github.com/JakobHavtorn/hvae-oodd)
 - [NVAE](https://github.com/NVlabs/NVAE), [simple NVAE](https://github.com/GlassyWing/nvae), [very simple NVAE](https://github.com/kartikeya-badola/NVAE-PyTorch)
 - [BIVA](https://github.com/vlievin/biva-pytorch)
+- [Variational Neural Cellular Automata](https://github.com/rasmusbergpalm/vnca).
 - [OpenAI Residual blocks](https://github.com/openai/vdvae/blob/main/vae.py)
 - [bjkeng blog](https://github.com/bjlkeng/sandbox/blob/master/notebooks/pixel_cnn/pixelcnn-test_loss_pixelconv2d-multi-image.ipynb)
-- [pixel-cnn DMoL](https://github.com/openai/pixel-cnn) [openai DMol](https://github.com/openai/vdvae/blob/main/vae_helpers.py)
+- [pixel-cnn MoDL](https://github.com/openai/pixel-cnn) [openai MoDL](https://github.com/openai/vdvae/blob/main/vae_helpers.py)
 
-https://github.com/rasmusbergpalm/vnca/blob/dmg-double-celeba/vae-nca.py
-https://github.com/rasmusbergpalm/vnca/tree/dmg_celebA_baseline
-https://github.com/rasmusbergpalm/vnca/blob/dmg_celebA_baseline/modules/vae.py#L88
-https://github.com/rasmusbergpalm/vnca/blob/dmg-double-celeba/vae-nca.py#L282
+https://github.com/rasmusbergpalm/vnca/blob/dmg-double-celeba/vae-nca.py  
+https://github.com/rasmusbergpalm/vnca/tree/dmg_celebA_baseline  
+https://github.com/rasmusbergpalm/vnca/blob/dmg_celebA_baseline/modules/vae.py#L88  
+https://github.com/rasmusbergpalm/vnca/blob/dmg-double-celeba/vae-nca.py#L282  
 
-https://drive.google.com/file/d/1IrPBblLovAImcZdWnzJO07OxT7QD9X2m/view
-https://github.com/rll/deepul/blob/master/deepul/hw3_helper.py
-https://github.com/rll/deepul/blob/master/deepul/utils.py
-https://github.com/rll/deepul/blob/master/homeworks/solutions/hw3_solutions.ipynb
+https://drive.google.com/file/d/1IrPBblLovAImcZdWnzJO07OxT7QD9X2m/view  
+https://github.com/rll/deepul/blob/master/deepul/hw3_helper.py  
+https://github.com/rll/deepul/blob/master/deepul/utils.py  
+https://github.com/rll/deepul/blob/master/homeworks/solutions/hw3_solutions.ipynb  
 
 ## Celeb_a data:
 https://github.com/nv-tlabs/CLD-SGM  
-https://github.com/openai/glow  
+https://github.com/openai/glow   
 
 
 # Story
-First we verify our setup by reproducing the original IWAE results in `model01.py`.
+### Verify setup with original IWAE
+First we verify our setup by reproducing the original IWAE results in `model01.py`. Compare this to table 1 in [The IWAE paper][IWAE].
 
 | Importance samples | Test-set LLH (5000 is) |
 | --- | --- |
@@ -55,6 +58,7 @@ First we verify our setup by reproducing the original IWAE results in `model01.p
 | --- | --- | --- |
 | ![][1] | ![][2] | ![][3] |
 
+### MSE and other improper reconstruction losses
 It is very common to see improper observations models used in place of $p(x|z)$. 
 For example   
 
@@ -74,6 +78,7 @@ Samples from the model look fine, but if the lower bounding on the variance is r
 | ![][4] | ![][5] | ![][6] |
 
 
+### Change to plain discretized logistic
 A Gaussian observtaion model for pixel values may not be appropriate in itself. 
 The mixture of discretized logistics is basically what everybody is using in VAEs
 There is a lot the MoDL loss, so in `model03.py` a plain discretized logistic distribution is used instead. 
@@ -98,6 +103,22 @@ We expand the conv architecture a bit in ``model04.py`. The conclusion is the sa
 | --- | --- | --- |
 | ![][10] | ![][11] | ![][12] |
 
+### Try out MoDL loss
+Now we go back to `model03.py` and instead of the plain discretized logistic, use the mixture of discretized logistic distributions, as in [pixel-cnn](https://github.com/openai/pixel-cnn).  
+In order to use this loss with the IWAE setup I've implemented my own version which is documented in this repo: [MDL](https://github.com/nbip/mdl).  
+This is implemented in `model05.py`. From the samples below it is clear that this doesn't cut it alone. The MoDL loss requires many more parameters to be learnt so it's probably fair that it doesn't work out of the box. 
+
+| Images | Reconstructions | Samples |
+| --- | --- | --- |
+| ![][13] | ![][14] | ![][15] |
+
+### Two stochastic layers
+Multiple stochastic layers are used in all SOTA VAEs. We now try to add another stochastic layer while keeping the plain discretized logistic loss in `model06.py`.
+
+| Images | Reconstructions | Samples |
+| --- | --- | --- |
+| ![][16] | ![][17] | ![][18] |
+
 
 # TODO:
 - implement a merge/unmerge layer for handling importance samples  
@@ -116,6 +137,13 @@ We expand the conv architecture a bit in ``model04.py`. The conclusion is the sa
 [10]: assets/model04_imgs.png
 [11]: assets/model04_recs.png
 [12]: assets/model04_samples.png
+[13]: assets/model05_imgs.png
+[14]: assets/model05_recs.png
+[15]: assets/model05_samples.png
+[16]: assets/model06_imgs.png
+[17]: assets/model06_recs.png
+[18]: assets/model06_samples.png
 
 
+[IWAE]: https://arxiv.org/abs/1509.00519
 [AntixK]: https://github.com/AntixK/PyTorch-VAE
