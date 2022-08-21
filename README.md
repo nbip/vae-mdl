@@ -1,14 +1,6 @@
 # vae-mdl
 VAE with mixture of discretized logistics
 
-## Resources
-[transformers from scratch](https://towardsdatascience.com/7-things-you-didnt-know-about-the-transformer-a70d93ced6b2)
-
-[Efficient VDVAE](https://github.com/Rayhane-mamah/Efficient-VDVAE)
-
-https://github.com/addtt/ladder-vae-pytorch
-https://github.com/addtt/ladder-vae-pytorch/blob/master/lib/likelihoods.py#L117
-
 ## Architectures:
 https://github.com/AntixK/PyTorch-VAE/blob/master/models/vanilla_vae.py
 
@@ -31,6 +23,8 @@ In the loss I was reducing over last three axes, but when I changed the latent v
 - [bjkeng blog](https://github.com/bjlkeng/sandbox/blob/master/notebooks/pixel_cnn/pixelcnn-test_loss_pixelconv2d-multi-image.ipynb)
 - [pixel-cnn MoDL](https://github.com/openai/pixel-cnn) [openai MoDL](https://github.com/openai/vdvae/blob/main/vae_helpers.py)
 
+[transformers from scratch](https://towardsdatascience.com/7-things-you-didnt-know-about-the-transformer-a70d93ced6b2)
+
 https://github.com/rasmusbergpalm/vnca/blob/dmg-double-celeba/vae-nca.py  
 https://github.com/rasmusbergpalm/vnca/tree/dmg_celebA_baseline  
 https://github.com/rasmusbergpalm/vnca/blob/dmg_celebA_baseline/modules/vae.py#L88  
@@ -40,10 +34,6 @@ https://drive.google.com/file/d/1IrPBblLovAImcZdWnzJO07OxT7QD9X2m/view
 https://github.com/rll/deepul/blob/master/deepul/hw3_helper.py  
 https://github.com/rll/deepul/blob/master/deepul/utils.py  
 https://github.com/rll/deepul/blob/master/homeworks/solutions/hw3_solutions.ipynb  
-
-## Celeb_a data:
-https://github.com/nv-tlabs/CLD-SGM  
-https://github.com/openai/glow   
 
 
 # Story
@@ -67,11 +57,11 @@ For example
 
 These approaches can generate qualitatively good samples from relatively simple models, if you just take the mean from $p(x|z)$ and don't sample from it.
 An example of MSE loss with good results can be found here: [AntixK][AntixK].  
-In the case of the binary cross entropy, sampling would mean all pixel values are either 0 or 1. In the case of MSE loss (Gaussian with variance 1), the sampling variance overwhelms the mean function.  
+In the case of the binary cross entropy, sampling would mean all pixel values are either 0 or 1. In the case of MSE loss (Gaussian with variance 1), the sampling variance overwhelms the mean function and samples just look like noise.  
 
 This is illustrated with a Gaussian observation model $p(x|z)$ in `model02.py`. 
 The variance is soft lower bounded at $exp(-1)$ by putting a tanh activation on the log variance. 
-Samples from the model look fine, but if the lower bounding on the variance is removed, they become terrible - try it out.
+Mean-function samples from the model look fine, but if the lower bounding on the variance is removed, they become terrible - try it out.
 
 | Images | Reconstructions | Samples |
 | --- | --- | --- |
@@ -97,7 +87,7 @@ So there is some kind of misspecification of the generative model. We have a few
 * The beta-VAE has a reweighting of the KL, which helps produce better samples when beta is tuned correctly. This is equivalent to lower bounding the variance in the observation model so we won't look at this approach.
 
 ### Expand conv architecture
-We expand the conv architecture a bit in ``model04.py`. The conclusion is the same, without lower bounding the variance the samples from the generative model are terrible.
+We expand the conv architecture a bit in `model04.py`. The conclusion is the same, without lower bounding the variance the samples from the generative model are terrible.
 
 | Images | Reconstructions | Samples |
 | --- | --- | --- |
@@ -106,19 +96,32 @@ We expand the conv architecture a bit in ``model04.py`. The conclusion is the sa
 ### Try out MoDL loss
 Now we go back to `model03.py` and instead of the plain discretized logistic, use the mixture of discretized logistic distributions, as in [pixel-cnn](https://github.com/openai/pixel-cnn).  
 In order to use this loss with the IWAE setup I've implemented my own version which is documented in this repo: [MDL](https://github.com/nbip/mdl).  
-This is implemented in `model05.py`. From the samples below it is clear that this doesn't cut it alone. The MoDL loss requires many more parameters to be learnt so it's probably fair that it doesn't work out of the box. 
+This is implemented in `model05.py`. From the samples below it is clear that this doesn't cut it alone. The MoDL loss requires many more parameters to be learnt so it's probably fair that it doesn't work out of the box.
+Now that we are using a propoer loss without we can report a lower bound $p(x)$ on the test-set in bits pr dim
+
+| Test-set BPD (5000 is) |
+| --- |
+| $\approx  4.5$ |
 
 | Images | Reconstructions | Samples |
 | --- | --- | --- |
 | ![][13] | ![][14] | ![][15] |
 
 ### Two stochastic layers
-Multiple stochastic layers are used in all SOTA VAEs. We now try to add another stochastic layer while keeping the plain discretized logistic loss in `model06.py`.
+Multiple stochastic layers are used in all SOTA VAEs. We now try to add another stochastic layer while using the plain discretized logistic loss in `model06.py`.
+
+| Test-set BPD (5000 is) |
+| --- |
+| $\approx  5.4$ |
 
 | Images | Reconstructions | Samples |
 | --- | --- | --- |
 | ![][16] | ![][17] | ![][18] |
 
+
+## Celeb_a data:
+https://github.com/nv-tlabs/CLD-SGM  
+https://github.com/openai/glow
 
 # TODO:
 - implement a merge/unmerge layer for handling importance samples  
