@@ -63,9 +63,9 @@ This is illustrated with a Gaussian observation model $p(x|z)$ in `model02.py`.
 The variance is soft lower bounded at $exp(-1)$ by putting a tanh activation on the log variance. 
 Mean-function samples from the model look fine, but if the lower bounding on the variance is removed, they become terrible - try it out.
 
-| Images | Reconstructions | Samples |
-| --- | --- | --- |
-| ![][4] | ![][5] | ![][6] |
+| Images | Reconstructions | Samples Constrained | Samples Unconstrained |  
+| --- | --- | --- | --- |
+| ![][4] | ![][5] | ![][6] | ![][7] |
 
 
 ### Change to plain discretized logistic
@@ -75,9 +75,9 @@ There is a lot the MoDL loss, so in `model03.py` a plain discretized logistic di
 The logistic distribution is somewhat similar to a gaussian, where the continuous distribution is being binned into a discrete pmf.
 The same phenomenon is seen here: with a lowerbounding of the variance samples from the model look reasonable, while removing the lower bounding destroys the samples.
 
-| Images | Reconstructions | Samples |
-| --- | --- | --- |
-| ![][7] | ![][8] | ![][9] |
+| Images | Reconstructions | Samples Constrained | Samples Unconstrained |
+| --- | --- | --- | --- |
+| ![][8] | ![][9] | ![][10] | ![][11] |
 
 So there is some kind of misspecification of the generative model. We have a few options for mitigating this  
 
@@ -89,9 +89,9 @@ So there is some kind of misspecification of the generative model. We have a few
 ### Expand conv architecture
 We expand the conv architecture a bit in `model04.py`. The conclusion is the same, without lower bounding the variance the samples from the generative model are terrible.
 
-| Images | Reconstructions | Samples |
-| --- | --- | --- |
-| ![][10] | ![][11] | ![][12] |
+| Images | Reconstructions | Samples Constrained | Samples Unconstrained |
+| --- | --- | --- | --- |
+| ![][12] | ![][13] | ![][14] | ![][15] |
 
 ### Try out MoDL loss
 Now we go back to `model03.py` and instead of the plain discretized logistic, use the mixture of discretized logistic distributions, as in [pixel-cnn](https://github.com/openai/pixel-cnn).  
@@ -105,7 +105,7 @@ Now that we are using a propoer loss without we can report a lower bound $p(x)$ 
 
 | Images | Reconstructions | Samples |
 | --- | --- | --- |
-| ![][13] | ![][14] | ![][15] |
+| ![][16] | ![][17] | ![][18] |
 
 ### Two stochastic layers
 Multiple stochastic layers are used in all SOTA VAEs. We now try to add another stochastic layer while using the plain discretized logistic loss in `model06.py`.
@@ -116,7 +116,7 @@ Multiple stochastic layers are used in all SOTA VAEs. We now try to add another 
 
 | Images | Reconstructions | Samples |
 | --- | --- | --- |
-| ![][16] | ![][17] | ![][18] |
+| ![][19] | ![][20] | ![][21] |
 
 
 ## Celeb_a data:
@@ -134,18 +134,21 @@ https://github.com/openai/glow
 [4]: assets/model02_imgs.png
 [5]: assets/model02_recs.png
 [6]: assets/model02_samples.png
-[7]: assets/model03_imgs.png
-[8]: assets/model03_recs.png
-[9]: assets/model03_samples.png
-[10]: assets/model04_imgs.png
-[11]: assets/model04_recs.png
-[12]: assets/model04_samples.png
-[13]: assets/model05_imgs.png
-[14]: assets/model05_recs.png
-[15]: assets/model05_samples.png
-[16]: assets/model06_imgs.png
-[17]: assets/model06_recs.png
-[18]: assets/model06_samples.png
+[7]: assets/model02_samples_var.png
+[8]: assets/model03_imgs.png
+[9]: assets/model03_recs.png
+[10]: assets/model03_samples.png
+[11]: assets/model03_samples_var.png
+[12]: assets/model04_imgs.png
+[13]: assets/model04_recs.png
+[14]: assets/model04_samples.png
+[15]: assets/model04_samples_var.png
+[16]: assets/model05_imgs.png
+[17]: assets/model05_recs.png
+[18]: assets/model05_samples.png
+[19]: assets/model06_imgs.png
+[20]: assets/model06_recs.png
+[21]: assets/model06_samples.png
 
 
 [IWAE]: https://arxiv.org/abs/1509.00519
