@@ -89,7 +89,10 @@ class Decoder(tf.keras.Model):
             out, [*z.shape[:-1], self.out_shape[0], self.out_shape[1], 3 * 2]
         )
         mu, logstd = tf.split(out, num_or_size_splits=2, axis=-1)
-        pxz = tfd.Normal(mu, tf.exp(tf.nn.tanh(logstd)))  # OBS! note the tanh(logstd)
+
+        # pxz = tfd.Normal(mu, tf.exp(tf.nn.tanh(logstd)))  # OBS! note the tanh(logstd)
+        pxz = tfd.Normal(mu, tf.exp(logstd))
+
         return pxz
 
 

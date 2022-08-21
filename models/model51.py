@@ -3,6 +3,8 @@ Reproduce model36, but more modular setup,
 like model47.
 then look to model49 and reproduce.
 
+looks fine, go to model 47, 49 and mdl loss
+
 cues:
 VDVAE:
 https://github.com/openai/vdvae/blob/main/train.py#L17
@@ -28,23 +30,13 @@ from tensorflow_probability import distributions as tfd
 from tqdm import tqdm
 
 from models.model import Model
-from utils import DiscretizedLogistic, GlobalStep, logmeanexp, setup_data
-
-
-class DistributionTuple(NamedTuple):
-    """collection of distribution, samples and reduction axes"""
-
-    dist: tfp.distributions.Distribution
-    sample: Optional[tf.Tensor] = None
-    axes: tuple = (-1, -2, -3)
-
-    @property
-    def z(self):
-        return self.sample
-
-    @property
-    def x(self):
-        return self.sample
+from utils import (
+    DiscretizedLogistic,
+    DistributionTuple,
+    GlobalStep,
+    logmeanexp,
+    setup_data,
+)
 
 
 def loss_fn(
@@ -56,13 +48,14 @@ def loss_fn(
 ):
 
     top_layer = max(Qs.keys())
+    KL = {}
 
     # ---- prior p(z)
     p, _, paxes = list(prior)
     q, z, qaxes = list(Qs[top_layer])
     log_p = tf.reduce_sum(p.log_prob(z), axis=paxes)
     log_q = tf.reduce_sum(q.log_prob(z), axis=qaxes)
-    kl = [log_p - log_q]
+    KL[f"kl{top_layer}"] = log_p - log_q
 
     # ---- stochastic layers 1 : L-1
     for i in range(1, top_layer):
@@ -71,13 +64,13 @@ def loss_fn(
 
         log_q = tf.reduce_sum(q.log_prob(z), axis=qaxes)
         log_p = tf.reduce_sum(p.log_prob(z), axis=paxes)
-        kl.append(log_p - log_q)
+        KL[f"kl{i}"] = log_p - log_q
 
     # ---- observation model p(x | z_1)
     lpxz = tf.reduce_sum(pxz.dist.log_prob(x), axis=pxz.axes)
 
     # ---- log weights
-    log_w = lpxz + tf.add_n(kl)
+    log_w = lpxz + tf.add_n(list(KL.values()))
 
     # ---- logmeanexp over samples, average over batch
     iwae_elbo = tf.reduce_mean(logmeanexp(log_w, axis=0), axis=-1)
@@ -87,10 +80,6 @@ def loss_fn(
     # https://github.com/Rayhane-mamah/Efficient-VDVAE/blob/main/efficient_vdvae_torch/model/losses.py#L146
     n_dims = tf.cast(tf.math.reduce_prod(x.shape[1:]), tf.float32)
     bpd = -iwae_elbo / (tf.math.log(2.0) * n_dims)
-
-    KL = {}
-    for i, k in enumerate(kl):
-        KL[f"kl_{i + 1}"] = k
 
     return -iwae_elbo, {"iwae_elbo": iwae_elbo, "bpd": bpd, "lpxz": lpxz, **KL}
 
@@ -276,7 +265,7 @@ class Model51(Model, tf.keras.Model):
 
         return loss, metrics
 
-    # @tf.function
+    @tf.function
     def val_step(self, x: tf.Tensor) -> Tuple[tf.Tensor, Dict]:
         Qs, Ps, pxz = self(x, n_samples=self.n_samples)
         loss, metrics = self.loss_fn(x, Qs, Ps, pxz, self.pz)

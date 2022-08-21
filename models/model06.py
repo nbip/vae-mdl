@@ -1,5 +1,6 @@
 """
-2 stochastic layers.
+Two stochastic layers.
+The IWAE loss with two stochastic layers is spelled out for clarity.
 """
 import os
 from datetime import datetime
@@ -290,9 +291,7 @@ class Model06(Model, tf.keras.Model):
         pz = tfd.Normal(tf.zeros_like(qz2z1.z), tf.ones_like(qz2z1.z))
         pz1z2, pxz1 = self.generate(pz.sample())
         # samples = np.clip(pxz1.p.mean()[0], 0.0, 1.0)  # [n_samples, batch, h, w, ch]
-        samples = np.clip(
-            pxz1.dist.sample()[0], 0.0, 1.0
-        )
+        samples = np.clip(pxz1.dist.sample()[0], 0.0, 1.0)
 
         img_canvas = fill_canvas(x, n, h, w, c)
         rec_canvas = fill_canvas(recs, n, h, w, c)

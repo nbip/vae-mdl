@@ -1,5 +1,7 @@
 """
 As model51 but with mdl loss
+not impressive samples or reconstructions,
+though bpd is better than model51...?
 """
 import os
 from datetime import datetime
@@ -17,6 +19,7 @@ from utils import (
     DistributionTuple,
     GlobalStep,
     MixtureDiscretizedLogistic,
+    MixtureDiscretizedLogisticOpenaiIWAE,
     logmeanexp,
     setup_data,
 )
@@ -160,7 +163,8 @@ class Decoder(tf.keras.Model):
         h = tf.reshape(h, [-1, *self.base_size])
         out = self.deconvs(h)
         out = tf.reshape(out, [*z.shape[:-1], 32, 32, self.n_mix * 10])
-        pxz = MixtureDiscretizedLogistic(parameters=out)
+        # pxz = MixtureDiscretizedLogistic(parameters=out)
+        pxz = MixtureDiscretizedLogisticOpenaiIWAE(logits=out)
         x = pxz.sample()
         return DistributionTuple(pxz, x, axes=(-1, -2, -3))
 

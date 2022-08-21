@@ -89,9 +89,12 @@ class Decoder(tf.keras.Model):
             out, [*z.shape[:-1], self.out_shape[0], self.out_shape[1], 3 * 2]
         )
         mu, logstd = tf.split(out, num_or_size_splits=2, axis=-1)
-        pxz = DiscretizedLogistic(
-            mu, tf.nn.tanh(logstd), low=0.0, high=1.0, levels=256
-        )  # OBS! note the tanh(logstd)
+
+        # OBS! note the tanh(logstd)
+        # pxz = DiscretizedLogistic(
+        #     mu, tf.nn.tanh(logstd), low=0.0, high=1.0, levels=256
+        # )
+        pxz = DiscretizedLogistic(mu, logstd, low=0.0, high=1.0, levels=256)
         return pxz
 
 
