@@ -4,6 +4,8 @@ from tensorflow_probability import distributions as tfd
 
 from modules.residual import ResidualBlock
 
+# TODO: fix warning about layer construction
+
 
 class Up2D(layers.Layer):
     """Make upscaling handle ndim = 5 instead of just ndim = 4"""
