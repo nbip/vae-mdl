@@ -29,7 +29,7 @@ An example of MSE loss with good results can be found here: [AntixK][AntixK].
 In the case of the binary cross entropy, sampling would mean all pixel values are either 0 or 1. In the case of MSE loss (Gaussian with variance 1), the sampling variance overwhelms the mean function and samples just look like noise.  
 
 This is illustrated with a Gaussian observation model $p(x|z)$ in `model02.py`. 
-The variance is soft lower bounded at $\exp(-1)$ by putting a tanh activation on the log variance. 
+The variance is soft lower bounded at $\exp(-1)$ by putting a tanh activation on the log variance, $p(x|z) = N(\mu_{\theta}, \exp(\tanh (\log \sigma_{\theta})))$. 
 Mean-function samples from the model look fine, but if the lower bounding on the variance is removed, they become terrible.
 Note that in both cases we are showing the mean function, not actual samples from $p(x|z)$.
 
@@ -39,8 +39,8 @@ Note that in both cases we are showing the mean function, not actual samples fro
 
 
 ### Change to plain discretized logistic
-A Gaussian observtaion model for pixel values may not be appropriate in itself. 
-The mixture of discretized logistics has become the defacto observation model that everybody is using in VAEs these days.
+A Gaussian observation model for pixel values may not be appropriate in itself. 
+The mixture of discretized logistics has become the defacto observation model that everybody is using in VAEs these days ([VDVAE], [NVAE], [OOOD]).
 There is a lot the MoDL loss, so in `model03.py` a plain discretized logistic distribution is used instead.
 The same phenomenon is seen here: with a lower bounding of the variance samples from the model look reasonable, while removing the lower bounding destroys the samples.
 Again we are showing the mean function in both cases, not actual samples from $p(x|z)$.
@@ -51,7 +51,8 @@ Again we are showing the mean function in both cases, not actual samples from $p
 
 So there is some kind of misspecification of the generative model. My impression is that 
 when both the mean function and the variance are learnt through neural networks, if the mean function is reasonable 
-the variance can shrink quite low which lets the observation model loss dominate over the KL loss. We have a few options for mitigating this  
+the variance can shrink quite low which lets the observation model loss dominate over the KL loss, and samples from the prior are no longer meaningful while reconstructions are fine. 
+We have a few options for mitigating this  
 
 * The convolutional archtectures have been simple so far, maybe a more complex architecture helps
 * The MoDL loss as typically used has an autoregression over the RGB channels, maybe this helps
@@ -66,9 +67,9 @@ We expand the conv architecture a bit in `model04.py`. The conclusion is the sam
 | ![][12] | ![][13] | ![][14] | ![][15] |
 
 ### Try out MoDL loss
-Now we go back to `model03.py` and instead of the plain discretized logistic, use the mixture of discretized logistic distributions, as in [pixel-cnn](https://github.com/openai/pixel-cnn).  
-In order to use this loss with the IWAE setup I've implemented my own version which is documented in this repo: [MDL](https://github.com/nbip/mdl).  
-This is implemented in `model05.py`. From the samples below it is clear that this doesn't cut it alone. The MoDL loss requires many more parameters to be learnt so it's probably fair that it doesn't work out of the box.
+Now we go back to `model03.py` and instead of the plain discretized logistic, use the mixture of discretized logistic distributions, as introduced in [pixel-cnn](https://github.com/openai/pixel-cnn).  
+An implementation which can be used with the IWAE setup is documented in this repo: [MDL](https://github.com/nbip/mdl).  
+This is used in `model05.py`. From the samples below it is clear that this doesn't cut it alone. The MoDL loss requires many more parameters to be learnt so it's probably fair that it doesn't work out of the box.
 Now that we are finally using a proper observation model we can report a lower bound on $p(x)$ on the test-set. Here we report it as an upper bound on bits pr dim.
 
 | Test-set BPD (5000 is) |
@@ -80,7 +81,9 @@ Now that we are finally using a proper observation model we can report a lower b
 | ![][16] | ![][17] | ![][18] |
 
 ### Two stochastic layers
-Multiple stochastic layers are used in all SOTA VAEs. We now try to add another stochastic layer while using the plain discretized logistic loss in `model06.py`.
+Multiple stochastic layers are used in all SOTA VAEs. 
+We now try to add another stochastic layer while using the plain discretized logistic loss in `model06.py`.
+Samples are now actual samples from $p(x|z)$, not just the mean function, and while they show some clipping artefacts they look much more reasonable than for the similar model with one stochastic layer in `model03.py`.
 
 | Test-set BPD (5000 is) |
 | --- |
@@ -138,3 +141,7 @@ https://github.com/openai/glow
 
 [IWAE]: https://arxiv.org/abs/1509.00519
 [AntixK]: https://github.com/AntixK/PyTorch-VAE
+[VDVAE]: https://github.com/openai/vdvae
+[NVAE]: https://github.com/NVlabs/NVAE
+[OODD]: https://github.com/JakobHavtorn/hvae-oodd
+
