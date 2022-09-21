@@ -1,7 +1,7 @@
 # (work in progress) vae-mdl 
 Empirically it is hard to get a VAE with a *proper observation model* and a single stochastic layer to work well (high log likelihood and realistic samples from the prior) on images, except for binarized mnist.
 SOTA VAEs are implemented with the mixture of discretized logistics observation model and multiple stochastic layers and seem to work really well.  
-Is the magic in the discretized observation model?
+Is the magic in the discretized observation model? Or multiple stochastic layers?
 
 Here we implement a basic [Importance Weighted Autoencoder][IWAE] and expand it gradually to investigate the importance of the observation model and the stochastic layers.
 
@@ -40,7 +40,7 @@ Note that in both cases we are showing the mean function, not actual samples fro
 
 ### Change to plain discretized logistic
 A Gaussian observation model for pixel values may not be appropriate in itself. 
-The mixture of discretized logistics has become the defacto observation model that everybody is using in VAEs these days ([VDVAE], [NVAE], [OOOD]).
+The mixture of discretized logistics has become the defacto observation model that everybody is using in VAEs these days ([VDVAE], [NVAE], [OODD]).
 There is a lot the MoDL loss, so in `model03.py` a plain discretized logistic distribution is used instead.
 The same phenomenon is seen here: with a lower bounding of the variance samples from the model look reasonable, while removing the lower bounding destroys the samples.
 Again we are showing the mean function in both cases, not actual samples from $p(x|z)$.
@@ -95,6 +95,9 @@ Samples are now actual samples from $p(x|z)$, not just the mean function, and wh
 
 ### Two stochastic layers with MoDL
 We've seen that two stochastic layers helps a lot with the plain discretized logistic, does the mixture of discretized logistics improve further?
+
+### Two stochastic layers, without the use of MLPs
+
 
 ## Architectures:
 https://github.com/AntixK/PyTorch-VAE/blob/master/models/vanilla_vae.py
