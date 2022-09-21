@@ -52,7 +52,7 @@ def loss_fn(x, pz, qz1x, qz2z1, pz1z2, pxz1):
     # ---- bits_pr_dim:
     # https://github.com/rasmusbergpalm/vnca/blob/main/modules/vnca.py#L185
     # https://github.com/Rayhane-mamah/Efficient-VDVAE/blob/main/efficient_vdvae_torch/model/losses.py#L146
-    n_dims = tf.cast(tf.math.reduce_prod(x.shape[-len(pxz1.axes) :]), tf.float32)
+    n_dims = tf.cast(tf.math.reduce_prod(x.shape[-len(pxz1.axes):]), tf.float32)
     bpd = -iwae_elbo / (tf.math.log(2.0) * n_dims)
 
     log_snis = tf.math.log_softmax(log_w)
